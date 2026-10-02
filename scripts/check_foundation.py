@@ -16,7 +16,7 @@ import tempfile
 from pathlib import Path
 
 REQUIRED_FILES: tuple[str, ...] = (
-    "AGENTS.md", "README.md", ".gitignore", ".env.example",
+    "CLAUDE.md", "AGENTS.md", "README.md", ".gitignore", ".env.example",
     "docs/README.md", "docs/executive-summary.md", "docs/product-spec.md", "docs/architecture.md",
     "docs/domain-model.md", "docs/data-model.md", "docs/ingestion-design.md", "docs/retrieval-design.md",
     "docs/graph-schema.md", "docs/temporal-model.md", "docs/evidence-model.md", "docs/agent-design.md",
@@ -107,7 +107,7 @@ def check_links(root: Path) -> list[str]:
 
 
 def check_constitution(root: Path) -> list[str]:
-    """Ensure AGENTS.md carry identical H1..H18 rules. Provenance: brief §6."""
+    """Ensure AGENTS.md and CLAUDE.md carry identical H1..H18 rules. Provenance: brief §6."""
     def rules(name: str) -> list[str]:
         text = (root / name).read_text(encoding="utf-8")
         return [ln for ln in text.splitlines() if re.match(r"^- \*\*H\d+ ", ln)]

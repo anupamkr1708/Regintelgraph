@@ -1,0 +1,441 @@
+# data/manifests/sebi-mutual-funds.yaml
+# RegIntelGraph source manifest -- Phase 1A reconnaissance output. DRAFT FOR HUMAN REVIEW.
+#
+# What this file is:    a reviewable candidate inventory + source-access gate.
+# What it is NOT:       an ingestion authorisation, a legal clearance, or a completed corpus list.
+# Contains no raw document content, no secrets, no contact addresses (H12).
+#
+# Status vocabulary used in `*_status` / `verification` fields (never blurred):
+#   VERIFIED    read directly from the primary source (official SEBI page/PDF) in this session
+#   OBSERVED    seen in a source this session, but NOT the canonical SEBI artifact (e.g. third-party copy)
+#               or seen only as a pointer/reference inside another document
+#   INFERRED    engineering deduction from observations (reasoning stated in the report)
+#   UNVERIFIED  not checked / could not be checked
+#
+# Date fields are NOT interchangeable (H9): `listing_date` is the date shown on SEBI's listing page;
+# `printed_date` is a date printed inside a document; `effective_date` is only set where document text states one.
+# Evidence locations and wording analysis: docs/phase1/recon-findings.md. Access analysis: docs/phase1/source-access-report.md.
+
+manifest_version: "0.1.0-draft"
+source_id: sebi-mutual-funds
+authority: sebi                      # from manifest config, never from document text (ingestion-design s2)
+domain:
+  jurisdiction: IN
+  regulator: SEBI
+  corpus: mutual-funds
+  decision_ref: docs/adr/ADR-009-initial-domain-scope.md   # PROPOSED in Stage 1; treated as working decision by the Phase 1A brief
+  fallback_if_validation_fails: investment-advisers          # ADR-009; NOT triggered by Phase 1A evidence
+
+access_review_reference: docs/phase1/source-access-report.md
+access_review:
+  status: AMBIGUOUS_REQUIRES_REVIEW      # APPROVED_FOR_RECONNAISSANCE | BLOCKED | AMBIGUOUS_REQUIRES_REVIEW
+  reviewed_by: null                      # human reviewer must fill before status can change
+  reviewed_at: null
+  open_items:                            # all must be closed by a human before ingestion_authorized can be true
+    - robots.txt for www.sebi.gov.in not retrieved (sandbox egress denied, host_not_allowed) -> UNVERIFIED
+    - Copyright Policy requires permission (by mail) for reproduction; scope vs internal storage/quote display undecided
+    - Website Policy is silent on automated retrieval -> neither permitted nor prohibited by text
+    - Listing pagination is JavaScript-driven; permissibility/shape of programmatic enumeration unreviewed
+ingestion_authorized: false              # fail-closed: Phase 1B code MUST refuse to fetch while false
+
+allowed_hosts:                           # exact hosts; no wildcards (ingestion-design s3, security T-04/T-07)
+  - www.sebi.gov.in
+allowed_url_policy:
+  schemes: [https]
+  allowed_methods: [GET, HEAD]
+  # Observed path families on www.sebi.gov.in (OBSERVED, not an exhaustive or guaranteed contract):
+  path_prefixes:
+    listing:    ["/sebiweb/home/HomeAction.do"]
+    detail:     ["/legal/master-circulars/", "/legal/circulars/", "/legal/regulations/", "/reports-and-statistics/reports/"]
+    attachment: ["/sebi_data/attachdocs/", "/sebi_data/commondocs/"]
+  viewer_wrapper_note: >
+    Detail pages link attachments through a viewer URL of the form /web/?file=<absolute pdf url>.
+    The viewer must never be fetched; the inner URL must be extracted and validated by the same rules (OBSERVED).
+
+listing_urls:
+  # Listing pages fetched once each during Phase 1A (read-only). `stability` is UNVERIFIED for all:
+  # they are query-string endpoints of SEBI's own site, surfaced by search, not documented as stable APIs.
+  - id: legal-master-circulars-updated
+    url: "https://www.sebi.gov.in/sebiweb/home/HomeAction.do?doListing=yes&sid=1&ssid=6"
+    observed: "'Updated List' mode, 134 records across 6 pages; page 1 (25 records) read. Has a separate 'Historical Data' mode (not opened)."
+    stability: UNVERIFIED
+  - id: mf-circular-title-search
+    url: "https://www.sebi.gov.in/sebiweb/home/HomeAction.do?doListingAll=yes&search=Circular+For+Mutual+Funds"
+    observed: "15 records on one page: 10 Master Circulars for Mutual Funds (2011-01-07 .. 2026-03-20) + 5 Circulars (2010-2012). Complete for that title query only."
+    stability: UNVERIFIED
+  - id: mf-keyword-search
+    url: "https://www.sebi.gov.in/sebiweb/home/HomeAction.do?doListingAll=yes&search=Mutual+Funds"
+    observed: "486 records, 20 pages; page 1 (25 records, 2026-08-11 .. 2025-04-17) read. Includes non-regulatory noise (recovery notices, speeches). Pagination is JS-driven; pages 2-20 NOT read."
+    known_gaps: "Two in-window Mutual Funds circulars referenced by official documents are absent from page 1 (2026-02-26 categorisation circular; 2026-05-19 MCR-format circular) -> a title-keyword search under-enumerates. Department-filtered listing (Investment Management Department) is a candidate alternative, UNVERIFIED."
+    stability: UNVERIFIED
+
+document_types:           # manifest vocabulary; extraction of exact types remains a candidate (T-09)
+  - master_circular
+  - circular
+  - regulation                  # principal regulations, incl. SEBI "last amended" consolidated pages
+  - amendment_regulation
+  - draft_circular_consultation # context only; not a regulatory instrument until issued
+  - consultation_paper          # context only
+excluded_types_observed:        # seen on the listings; excluded from this manifest's scope
+  - recovery_proceedings
+  - informal_guidance
+  - speeches
+  - older_master_circulars_before_window   # kept only as context entries below
+
+bounded_date_window:
+  from: "2024-06-27"      # date of the predecessor Master Circular (listing_date); included at the boundary
+  to: "2026-07-10"        # latest Mutual Funds item seen on listing page 1 (circular); post-dates the 2026-07-07 regulation amendment
+  basis: INFERRED
+  rationale_ref: docs/phase1/recon-findings.md#bounded-corpus-window
+  contains_transition: "Master Circular 2024-06-27 -> 2026-03-20; MF Regulations 1996 (last amended 2025-11-01) -> MF Regulations 2026 (listing 2026-04-01) -> 2026 amendment (2026-07-07)"
+  coverage_caveat: "Items between 2024-06-27 and 2025-04-17 are NOT enumerated (listing page 2+ unread). Known candidate count is a floor, not the corpus size."
+
+crawl:
+  status: NOT_CONFIGURED         # min_delay / max_bytes / timeouts / retries are required here before any fetch (source-safety-contract)
+  user_agent_contact: env:RIG_CRAWLER_CONTACT_EMAIL   # unset in .env.example; must be set before any live fetch
+
+document_overrides: []           # manual identity/date corrections (reason + reviewer required); none at Phase 1A
+
+# ----------------------------------------------------------------------------------------------------------
+# candidate_documents
+#   tier A  = anchor instruments (regulations + master circulars)
+#   tier B  = circulars in window (listing-verified or document-observed)
+#   tier C  = context only (consultation/draft)
+#   seed    = referenced inside an official document; canonical page/URL NOT yet resolved
+#   context_out_of_window = predecessor-of-predecessor, kept so lineage is representable
+# `sampled` = true only for the (max 3) documents whose text was read in Phase 1A.
+# ----------------------------------------------------------------------------------------------------------
+candidate_documents:
+
+  - document_key: SEBI-MF-MC-20260320
+    tier: A
+    title: "Master Circular for Mutual Funds"
+    document_type: master_circular
+    canonical_url: "https://www.sebi.gov.in/legal/master-circulars/mar-2026/master-circular-for-mutual-funds_100491.html"
+    canonical_url_status: VERIFIED          # fetched; no redirect observed (final_url == requested)
+    document_url: "https://www.sebi.gov.in/sebi_data/attachdocs/mar-2026/1774024028162.pdf"
+    document_url_status: OBSERVED           # read from the detail page's viewer link; the PDF itself could NOT be fetched from the canonical host in Phase 1A
+    source_reference: "HO/24/13/11(1)2026-IMD-POD-1/I/7602/2026"
+    source_reference_status: OBSERVED       # printed on a third-party copy of the circular; unverified against canonical bytes
+    listing_date: "2026-03-20"              # VERIFIED (official listing + detail page)
+    printed_date: "2026-03-20"              # OBSERVED (third-party copy)
+    effective_date: "2026-04-01"            # OBSERVED (front matter para 8 + para 1, third-party copy); see recon-findings R1
+    consolidated_as_of: "2026-03-20"        # OBSERVED ("as on" header and para 3); NOT an effective date
+    supersession_summary: "Para 8 says it replaces the Master Circular of 2024-06-27; para 4 rescinds circulars at Sr. Nos. 1-34 of its Appendix to the extent they relate to Mutual Funds. Replacement sentence carries no separate effective date."
+    supersession_evidence_ref: "docs/phase1/recon-findings.md#r1"
+    page_count: 748
+    page_count_status: OBSERVED             # per-page header stamps 'Page N of 748' in a third-party copy agree with the printed index offsets (cover letter p1, Chapter 1 p8, Chapter 3 p23); a 1-page third-party communique precedes it and is not counted. Canonical count UNVERIFIED
+    format: pdf
+    listing_page_url: "https://www.sebi.gov.in/sebiweb/home/HomeAction.do?doListing=yes&sid=1&ssid=6"
+    sampled: true
+    sample_provenance: "NON-CANONICAL copy (third-party hosted); parse findings are INFERRED for the canonical file"
+
+  - document_key: SEBI-MF-MC-20240627
+    tier: A
+    title: "Master Circular for Mutual Funds"
+    document_type: master_circular
+    canonical_url: "https://www.sebi.gov.in/legal/master-circulars/jun-2024/master-circular-for-mutual-funds_84441.html"
+    canonical_url_status: VERIFIED
+    document_url: "https://www.sebi.gov.in/sebi_data/attachdocs/jun-2024/1719488538007.pdf"
+    document_url_status: OBSERVED
+    source_reference: "SEBI/HO/IMD/IMD-PoD-1/P/CIR/2024/90"
+    source_reference_status: OBSERVED       # printed on a third-party copy
+    listing_date: "2024-06-27"
+    printed_date: "2024-06-27"              # OBSERVED (third-party copy)
+    effective_date: null                    # no coming-into-force statement observed in front matter paras 1-8 -> UNKNOWN per ADR-007 (not defaulted)
+    consolidated_as_of: "2024-03-31"        # OBSERVED ("as on" header)
+    supersession_summary: "Para 2 says it supersedes the Master Circular of 2023-05-19; para 3 rescinds circulars at Sr. Nos. 1-16 of its Appendix to the extent they relate to Mutual Funds. No effective-date sentence observed."
+    supersession_evidence_ref: "docs/phase1/recon-findings.md#r2"
+    page_count: null
+    page_count_note: "Printed index (third-party copy) lists Index of Formats at printed page 590; total UNVERIFIED"
+    format: pdf
+    listing_page_url: "https://www.sebi.gov.in/sebiweb/home/HomeAction.do?doListingAll=yes&search=Circular+For+Mutual+Funds"
+    sampled: true
+    sample_provenance: "NON-CANONICAL copy (AMC-hosted); parse findings are INFERRED for the canonical file"
+
+  - document_key: SEBI-MF-REG1996-20251101
+    tier: A
+    title: "Securities and Exchange Board of India (Mutual Funds) Regulations, 1996 [Last amended on November 01, 2025]"
+    document_type: regulation
+    canonical_url: "https://www.sebi.gov.in/legal/regulations/nov-2025/securities-and-exchange-board-of-india-mutual-funds-regulations-1996-last-amended-on-november-01-2025-_99120.html"
+    canonical_url_status: VERIFIED          # URL seen on official listing; detail page not fetched
+    document_url: null                      # UNRESOLVED
+    source_reference: null
+    listing_date: "2025-11-01"
+    effective_date: null
+    page_count: null
+    format: null
+    listing_page_url: "https://www.sebi.gov.in/sebiweb/home/HomeAction.do?doListingAll=yes&search=Mutual+Funds"
+    note: "SEBI's own 'last amended' consolidated page; non-authoritative status of consolidated text must be preserved (ADR-007 item 6). Relationship to the 2026 Regulations NOT read from source (UNVERIFIED); a SEBI informal-guidance listing title calls the 2026 Regulations the successor of the 1996 Regulations ('erstwhile')."
+    sampled: false
+
+  - document_key: SEBI-MF-REGAMD-20251101
+    tier: A
+    title: "Securities and Exchange Board of India (Mutual Funds) (Second Amendment) Regulations, 2025"
+    document_type: amendment_regulation
+    canonical_url: "https://www.sebi.gov.in/legal/regulations/nov-2025/securities-and-exchange-board-of-india-mutual-funds-second-amendment-regulations-2025_97594.html"
+    canonical_url_status: VERIFIED
+    document_url: null
+    source_reference: null
+    listing_date: "2025-11-01"
+    effective_date: null
+    page_count: null
+    format: null
+    listing_page_url: "https://www.sebi.gov.in/sebiweb/home/HomeAction.do?doListingAll=yes&search=Mutual+Funds"
+    sampled: false
+
+  - document_key: SEBI-MF-REG2026-20260401
+    tier: A
+    title: "Securities and Exchange Board of India (Mutual Funds) Regulations, 2026"
+    document_type: regulation
+    canonical_url: "https://www.sebi.gov.in/legal/regulations/apr-2026/securities-and-exchange-board-of-india-mutual-funds-regulations-2026_100744.html"
+    canonical_url_status: VERIFIED
+    document_url: null
+    source_reference: null
+    listing_date: "2026-04-01"
+    effective_date: "2026-04-01"
+    effective_date_status: OBSERVED         # stated in the 2026 Master Circular front matter para 1 (third-party copy); the Regulations' own text was NOT read
+    page_count: null
+    format: null
+    listing_page_url: "https://www.sebi.gov.in/sebiweb/home/HomeAction.do?doListingAll=yes&search=Mutual+Funds"
+    sampled: false
+
+  - document_key: SEBI-MF-REG2026-LASTAMENDED-20260707
+    tier: A
+    title: "Securities and Exchange Board of India (Mutual Funds) Regulations, 2026 [Last amended on July 7, 2026]"
+    document_type: regulation
+    canonical_url: "https://www.sebi.gov.in/legal/regulations/jul-2026/securities-and-exchange-board-of-india-mutual-funds-regulations-2026-last-amended-on-july-7-2026-_102780.html"
+    canonical_url_status: VERIFIED
+    document_url: null
+    source_reference: null
+    listing_date: "2026-07-07"
+    effective_date: null
+    page_count: null
+    format: null
+    listing_page_url: "https://www.sebi.gov.in/sebiweb/home/HomeAction.do?doListingAll=yes&search=Mutual+Funds"
+    note: "Consolidated 'last amended' page; derived/non-authoritative status to be preserved."
+    sampled: false
+
+  - document_key: SEBI-MF-REGAMD-20260707
+    tier: A
+    title: "Securities and Exchange Board of India (Mutual Funds) (Amendment) Regulations, 2026"
+    document_type: amendment_regulation
+    canonical_url: "https://www.sebi.gov.in/legal/regulations/jul-2026/securities-and-exchange-board-of-india-mutual-funds-amendment-regulations-2026_102677.html"
+    canonical_url_status: VERIFIED
+    document_url: null
+    source_reference: null
+    listing_date: "2026-07-07"
+    effective_date: null
+    page_count: null
+    format: null
+    listing_page_url: "https://www.sebi.gov.in/sebiweb/home/HomeAction.do?doListingAll=yes&search=Mutual+Funds"
+    sampled: false
+
+  - document_key: SEBI-MF-CIR-20260519-MCR
+    tier: B
+    title: "Revision of Monthly Cumulative Report (MCR) Format"
+    document_type: circular
+    canonical_url: null                     # detail page NOT seen; PDF URL surfaced via search and fetched from the canonical host
+    canonical_url_status: UNVERIFIED
+    document_url: "https://www.sebi.gov.in/sebi_data/attachdocs/may-2026/1779193408747.pdf"
+    document_url_status: VERIFIED           # fetched from www.sebi.gov.in; application/pdf
+    source_reference: "HO/24/11/24(62)2026-IMD-RAC4/I/11872/2026"
+    source_reference_status: VERIFIED       # printed in the canonical PDF header line
+    listing_date: null                      # not on listing page 1 (keyword search gap)
+    printed_date: "2026-05-19"              # VERIFIED
+    effective_date: null
+    effective_wording_summary: "Modified MCR format applies 'from June 2026 onwards' (month precision, para 2). Relative/partial: para 3 says all other conditions of the clause remain unchanged."
+    supersession_evidence_ref: "docs/phase1/recon-findings.md#r3"
+    page_count: null                        # first page stamp reads 'Page 1 of 1' (letter body); total PDF page count UNVERIFIED (annexures follow)
+    format: pdf
+    listing_page_url: null
+    sampled: true
+    sample_provenance: "CANONICAL host"
+
+  - document_key: SEBI-MF-CIR-20260313-BORROWING
+    tier: B
+    title: "Borrowing by Mutual Funds"
+    document_type: circular
+    canonical_url: "https://www.sebi.gov.in/legal/circulars/mar-2026/borrowing-by-mutual-funds_100329.html"
+    canonical_url_status: VERIFIED
+    document_url: null
+    source_reference: null
+    listing_date: "2026-03-13"
+    effective_date: null
+    page_count: null
+    format: null
+    listing_page_url: "https://www.sebi.gov.in/sebiweb/home/HomeAction.do?doListingAll=yes&search=Mutual+Funds"
+    sampled: false
+
+  - document_key: SEBI-MF-CIR-20260325-BORROWING-ADDENDUM
+    tier: B
+    title: "Addendum to SEBI Circular on Borrowing by Mutual Funds"
+    document_type: circular
+    canonical_url: "https://www.sebi.gov.in/legal/circulars/mar-2026/addendum-to-sebi-circular-on-borrowing-by-mutual-funds_100560.html"
+    canonical_url_status: VERIFIED
+    document_url: null
+    source_reference: null
+    listing_date: "2026-03-25"
+    effective_date: null
+    page_count: null
+    format: null
+    listing_page_url: "https://www.sebi.gov.in/sebiweb/home/HomeAction.do?doListingAll=yes&search=Mutual+Funds"
+    note: "Addendum to the borrowing circular dated 2026-03-13 (12 days earlier); its relationship to the Master Circular of 2026-03-20 (issued between them) is UNREAD. Good amendment/ordering test material."
+    sampled: false
+
+  - document_key: SEBI-MF-CIR-20260710-INTRADAY-BORROWING
+    tier: B
+    title: "Intraday borrowing facility availed by mutual funds"
+    document_type: circular
+    canonical_url: "https://www.sebi.gov.in/legal/circulars/jul-2026/intraday-borrowing-facility-availed-by-mutual-funds_102762.html"
+    canonical_url_status: VERIFIED
+    document_url: null
+    source_reference: null
+    listing_date: "2026-07-10"
+    effective_date: null
+    page_count: null
+    format: null
+    listing_page_url: "https://www.sebi.gov.in/sebiweb/home/HomeAction.do?doListingAll=yes&search=Mutual+Funds"
+    sampled: false
+
+  - document_key: SEBI-MF-CIR-20251128-REIT-RECLASS
+    tier: B
+    title: "Reclassification of Real Estate Investment Trusts (REITs) as equity related instruments for facilitating enhanced participation by Mutual Funds and Specialized Investment Funds (SIFs)"
+    document_type: circular
+    canonical_url: "https://www.sebi.gov.in/legal/circulars/nov-2025/reclassification-of-real-estate-investment-trusts-reits-as-equity-related-instruments-for-facilitating-enhanced-participation-by-mutual-funds-and-specialized-investment-funds-sifs-_98031.html"
+    canonical_url_status: VERIFIED
+    document_url: null
+    source_reference: null
+    listing_date: "2025-11-28"
+    effective_date: null
+    page_count: null
+    format: null
+    listing_page_url: "https://www.sebi.gov.in/sebiweb/home/HomeAction.do?doListingAll=yes&search=Mutual+Funds"
+    sampled: false
+
+  - document_key: SEBI-MF-CIR-20250812-LIQUID-MF-IA-RA
+    tier: B
+    title: "Use of liquid mutual funds and overnight mutual funds for compliance with deposit requirement by Investment Advisers and Research Analysts"
+    document_type: circular
+    canonical_url: "https://www.sebi.gov.in/legal/circulars/aug-2025/use-of-liquid-mutual-funds-and-overnight-mutual-funds-for-compliance-with-deposit-requirement-by-investment-advisers-and-research-analysts_96052.html"
+    canonical_url_status: VERIFIED
+    document_url: null
+    source_reference: null
+    listing_date: "2025-08-12"
+    effective_date: null
+    page_count: null
+    format: null
+    listing_page_url: "https://www.sebi.gov.in/sebiweb/home/HomeAction.do?doListingAll=yes&search=Mutual+Funds"
+    scope_note: "Primarily addressed to Investment Advisers / Research Analysts although it concerns MF schemes -> scope inclusion is a reviewer decision (ADR-009 forbids a second corpus)."
+    sampled: false
+
+  - document_key: SEBI-MF-CIR-20250422-OVERNIGHT-CUTOFF
+    tier: B
+    title: "Change in cut-off timings to determine applicable NAV with respect to repurchase/ redemption of units in overnight schemes of Mutual Funds"
+    document_type: circular
+    canonical_url: "https://www.sebi.gov.in/legal/circulars/apr-2025/change-in-cut-off-timings-to-determine-applicable-nav-with-respect-to-repurchase-redemption-of-units-in-overnight-schemes-of-mutual-funds_93541.html"
+    canonical_url_status: VERIFIED
+    document_url: null
+    source_reference: null
+    listing_date: "2025-04-22"
+    effective_date: null
+    page_count: null
+    format: null
+    listing_page_url: "https://www.sebi.gov.in/sebiweb/home/HomeAction.do?doListingAll=yes&search=Mutual+Funds"
+    sampled: false
+
+  - document_key: SEBI-MF-DRAFTCIR-202605-THIRDPARTY-PAYMENTS
+    tier: C
+    title: "Draft circular for public comments: Enabling third party payments in Mutual Funds (title as extracted; listing title: 'Consultation Paper on Draft Circular for Enabling Third Party Payments in Mutual Funds in certain scenarios')"
+    document_type: draft_circular_consultation
+    canonical_url: "https://www.sebi.gov.in/reports-and-statistics/reports/may-2026/consultation-paper-on-draft-circular-for-enabling-third-party-payments-in-mutual-funds-in-certain-scenarios_101534.html"
+    canonical_url_status: VERIFIED          # listing URL; whether this page links the draft PDF below is UNVERIFIED
+    document_url: "https://www.sebi.gov.in/sebi_data/attachdocs/may-2026/1779276447538.pdf"
+    document_url_status: OBSERVED           # surfaced via search from the canonical host; NOT fetched
+    source_reference: null
+    listing_date: "2026-05-20"
+    effective_date: null
+    page_count: null
+    format: pdf
+    listing_page_url: "https://www.sebi.gov.in/sebiweb/home/HomeAction.do?doListingAll=yes&search=Mutual+Funds"
+    note: "Search-index excerpt (not read) indicates it proposes a partial modification of clause 17.4.3 of the 2026 Master Circular. A draft is not an issued circular: must never create a SUPERSEDES/AMENDS edge (ADR-007 item 4)."
+    sampled: false
+
+  - document_key: SEBI-MF-CONSULT-20251028-REGS-REVIEW
+    tier: C
+    title: "Consultation paper on comprehensive review of SEBI (Mutual Funds) Regulations, 1996."
+    document_type: consultation_paper
+    canonical_url: "https://www.sebi.gov.in/reports-and-statistics/reports/oct-2025/consultation-paper-on-comprehensive-review-of-sebi-mutual-funds-regulations-1996-_97496.html"
+    canonical_url_status: VERIFIED
+    document_url: null
+    source_reference: null
+    listing_date: "2025-10-28"
+    effective_date: null
+    page_count: null
+    format: null
+    listing_page_url: "https://www.sebi.gov.in/sebiweb/home/HomeAction.do?doListingAll=yes&search=Mutual+Funds"
+    sampled: false
+
+  # ---- seeds: referenced inside the official 2026 Master Circular (footnotes) / May-2026 circular; NOT resolved ----
+  - document_key: SEBI-MF-CIR-20260226-CATEGORISATION
+    tier: seed
+    title: "Categorisation and Rationalisation of Mutual Fund Schemes (title UNVERIFIED; cited by date and number only)"
+    document_type: circular
+    source_reference: "HO/24/13/15(2)2026-IMD-RAC4/I/5764/2026"
+    source_reference_status: OBSERVED        # in footnotes 22/38 of the 2026 Master Circular copy; date also in the canonical 2026-05-19 circular
+    reference_date: "2026-02-26"
+    resolution_status: UNRESOLVED_REQUIRES_LISTING_LOOKUP
+    canonical_url: null
+    document_url: null
+    note: "Absent from listing page 1 of the keyword search although in window -> demonstrates keyword-search under-enumeration. Consolidated into 2026 MC clause 3.7 (OBSERVED, two documents)."
+    sampled: false
+
+  - document_key: SEBI-MF-CIR-20241220-DRAFT-SID
+    tier: seed
+    title: "(title UNVERIFIED) cited in 2026 Master Circular footnote 4"
+    document_type: circular
+    source_reference: "SEBI/HO/IMD/IMD-RAC-1/P/CIR/2024/179"
+    source_reference_status: OBSERVED
+    reference_date: "2024-12-20"
+    resolution_status: UNRESOLVED_REQUIRES_LISTING_LOOKUP
+    canonical_url: null
+    document_url: null
+    sampled: false
+
+  - document_key: SEBI-MF-CIR-20241231-PASSIVE
+    tier: seed
+    title: "(title UNVERIFIED) cited in 2026 Master Circular footnotes 77/78/79/80 (passive funds / hybrid ETFs)"
+    document_type: circular
+    source_reference: "SEBI/HO/IMD/PoD2/P/CIR/2024/183"
+    source_reference_status: OBSERVED
+    reference_date: "2024-12-31"
+    resolution_status: UNRESOLVED_REQUIRES_LISTING_LOOKUP
+    canonical_url: null
+    document_url: null
+    sampled: false
+
+  - document_key: SEBI-MF-CIR-20250626-REBALANCING
+    tier: seed
+    title: "(title UNVERIFIED) cited in 2026 Master Circular footnote 48 (prudential limits / rebalancing)"
+    document_type: circular
+    source_reference: "SEBI/HO/IMD/PoD2/P/CIR/2025/92"
+    source_reference_status: OBSERVED
+    reference_date: "2025-06-26"
+    resolution_status: UNRESOLVED_REQUIRES_LISTING_LOOKUP
+    canonical_url: null
+    document_url: null
+    sampled: false
+
+  # ---- context outside the window: lineage only; do not fetch in the first benchmark ----
+  - document_key: SEBI-MF-MC-20230519
+    tier: context_out_of_window
+    title: "Master Circular for Mutual Funds"
+    document_type: master_circular
+    canonical_url: "https://www.sebi.gov.in/legal/master-circulars/may-2023/master-circular-for-mutual-funds_71438.html"
+    canonical_url_status: VERIFIED           # URL on official listing; detail page not fetched
+    document_url: null
+    source_reference: null
+    listing_date: "2023-05-19"
+    effective_date: null
+    note: "Named as superseded by the 2024 Master Circular (para 2, OBSERVED). Earlier master circulars (2011-01-07 .. 2020-08-24) are on the official 15-record title listing and are intentionally outside the window."
+    sampled: false
