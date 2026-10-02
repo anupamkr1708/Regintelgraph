@@ -1,0 +1,81 @@
+# RegIntelGraph .gitignore
+# Deliberate design: generic names (models, build, logs, tmp, ...) are ANCHORED to the repo root so that
+# a source package such as packages/domain/models/ is never ignored by accident. Fixtures, manifests and
+# benchmark labels are tracked on purpose. scripts/check_foundation.py verifies these rules with probes.
+
+# --- Python ---
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.hypothesis/
+.coverage
+.coverage.*
+htmlcov/
+*.egg-info/
+/packages/*/build/
+/packages/*/dist/
+
+# --- Node ---
+node_modules/
+.next/
+dist/
+coverage/
+
+# --- Environment (placeholders live in .env.example only) ---
+.env
+.env.*
+!.env.example
+
+# --- IDE ---
+.vscode/
+.idea/
+
+# --- OS ---
+.DS_Store
+Thumbs.db
+
+# --- Project data / artifacts (root-anchored) ---
+/logs/
+*.log
+/tmp/
+/temp/
+/artifacts/
+/models/
+/checkpoints/
+local_data/
+
+# --- Downloaded regulatory source files: never committed (provenance lives in manifests + DB) ---
+/data/raw/
+/data/_work/
+/data/**/*.pdf
+/data/**/*.zip
+# ...except small, license-reviewed or SYNTHETIC fixtures
+!/data/fixtures/**/*.pdf
+
+# --- Databases ---
+*.db
+*.sqlite
+*.sqlite3
+
+# --- Caches ---
+.cache/
+
+# --- Generated (root-anchored) ---
+/generated/
+/build/
+/release/
+/*.zip
+
+# --- Secrets ---
+*.pem
+*.key
+*.crt
+credentials.*
+secrets.*
+!credentials.example.*
+!secrets.example.*
