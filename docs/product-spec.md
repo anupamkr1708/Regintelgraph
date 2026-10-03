@@ -28,7 +28,7 @@ Legal advice or compliance determination · coverage of every regulator · real-
 
 ## 6. Initial domain
 
-India / SEBI, one focused corpus. **Proposed:** Mutual Funds (regulations, master circular(s), and circulars amending/superseding them within a bounded date window) — chosen because it has rich supersession and amendment structure to stress the temporal model. Alternatives: AIF, Investment Advisers. Decision record and validation tasks: [ADR-009](adr/ADR-009-initial-domain-scope.md). Corpus boundaries are fixed by a reviewed manifest, not by crawling "everything".
+India / SEBI, one focused corpus. **Initial scope ([ADR-009](adr/ADR-009-initial-domain-scope.md)):** Mutual Funds (regulations, master circular(s), and circulars amending/superseding them within a bounded date window) — chosen because it has rich supersession and amendment structure to stress the temporal model. Alternatives: AIF, Investment Advisers. Decision record and validation tasks: [ADR-009](adr/ADR-009-initial-domain-scope.md). Corpus boundaries are fixed by a reviewed manifest, not by crawling "everything".
 
 ## 7. Future expansion (order, each gated by measured results)
 

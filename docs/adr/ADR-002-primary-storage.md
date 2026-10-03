@@ -1,6 +1,6 @@
 # ADR-002: Primary storage — PostgreSQL (+pgvector, FTS) and content-addressed blobs
 
-**Status:** ACCEPTED (index types and BM25 extension deferred: OD-04, OD-05; migration tool: OD-02)
+**Status:** ACCEPTED (index types and BM25 extension deferred: OD-04, OD-05; migration tool: resolved in Phase 1C as a minimal in-repository forward-only SQL runner, OD-02)
 
 ## Context
 Provenance rules (immutability, evidence FKs, "VERIFIED edge requires evidence") are easiest to enforce with relational constraints. Retrieval needs filters + sparse + dense in one system for correct pre-filtering. Raw regulatory files must be immutable and hash-addressed.

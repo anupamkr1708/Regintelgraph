@@ -1,6 +1,18 @@
 # AGENTS.md — Engineering Constitution (canonical)
 
-This file and `CLAUDE.md` are the **engineering constitution** of RegIntelGraph. They bind every contributor and every AI coding assistant. Architecture lives in `docs/`; this file governs *behaviour*. If this file conflicts with `CLAUDE.md`, **this file wins**. If either conflicts with an ADR on architecture, the ADR wins and the conflict must be reported.
+This file is the **single canonical engineering constitution** of RegIntelGraph. It binds every contributor and every AI coding assistant, and it is tool-agnostic: there is deliberately no second, tool-specific constitution. Architecture lives in `docs/`; this file governs *behaviour*. Precedence:
+
+```text
+safety / integrity constraints
+        ↓
+AGENTS.md engineering constitution (H1–H18)
+        ↓
+architecture ADRs
+        ↓
+implementation
+```
+
+An ADR may change an architecture decision (H5), but **no ADR can weaken H1–H18**. If code and an ADR disagree on architecture, the ADR wins and the conflict must be reported.
 
 Project in one line: *evidence-grounded regulatory intelligence and compliance-impact analysis* (India/SEBI first). Read `docs/architecture.md`, `docs/evidence-model.md`, `docs/temporal-model.md` and `docs/security.md` before touching any code.
 
@@ -27,7 +39,7 @@ Every rule has an ID so reviews and commits can cite it (e.g. "violates H4").
 - **H17 — Small, focused changes; no unrelated refactors.** One behavioural change per change set, with tests.
 - **H18 — Not legal advice.** The product is regulatory intelligence and decision support. No output, UI string or doc may claim to determine legal compliance or give legal advice.
 
-## Workflow: plan → implement → test → review
+## Workflow: inspect → plan → implement → test → review
 
 1. **Inspect.** Run `git status`, read the files you will touch and the docs/ADRs that govern them (H16).
 2. **Plan.** State the goal, files affected, tests to add, and which ADR/doc sections apply. For anything touching more than one package, write the plan down and wait for confirmation if ambiguity exists.
@@ -35,7 +47,7 @@ Every rule has an ID so reviews and commits can cite it (e.g. "violates H4").
 4. **Test.** Every behavioural change adds or modifies a test. Every material bug first becomes a failing regression fixture under `tests/regression/`. Run the offline suite.
 5. **Review.** Self-review against the checklist below before declaring done. Report what changed, what was tested, and what remains uncertain.
 
-## Layering rules (enforced by import checks once code exists)
+## Layering rules (enforced mechanically by `python scripts/check_imports.py`)
 
 - `packages/domain` — pure types, enums, invariants. Imports nothing from other project packages.
 - `packages/evidence`, `ingestion`, `retrieval`, `graph` — depend on `domain` only (plus `evidence` where noted in `docs/architecture.md`). They do not import each other except through declared interfaces.
@@ -60,7 +72,7 @@ Adding a dependency requires: why it is needed, why the standard library or an e
 - [ ] Provenance preserved end to end (H7); trust classes respected (H8)
 - [ ] Untrusted-content handling reviewed for any path that touches retrieved text (H4)
 - [ ] No new numbers without measurements (H14); no secrets (H12)
-- [ ] `python scripts/check_foundation.py` passes
+- [ ] `python scripts/check_foundation.py` and `python scripts/check_imports.py` pass
 - [ ] Summary states assumptions and anything not verified
 
 ## When to stop and ask

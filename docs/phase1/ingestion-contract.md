@@ -1,6 +1,6 @@
 # Phase 1 — Ingestion Contract (no implementation)
 
-Status: PROPOSED for review. Specifies the **types and guarantees** that Phase 1B must implement. It refines — and does not replace — [ingestion-design](../ingestion-design.md), [data-model](../data-model.md) §3 and [security](../security.md) T-04…T-08; where wording differs, those documents and the ADRs win (H5). Companion: [source-safety-contract](source-safety-contract.md). Evidence for the shapes below: [recon-findings](recon-findings.md).
+Status: **ACCEPTED as the Phase 1C implementation contract** (see §9 for what was built, the deliberate deviations and what remains unresolved). Specifies the **types and guarantees** that Phase 1C implements. It refines — and does not replace — [ingestion-design](../ingestion-design.md), [data-model](../data-model.md) §3 and [security](../security.md) T-04…T-08; where wording differs, those documents and the ADRs win (H5). Companion: [source-safety-contract](source-safety-contract.md). Evidence for the shapes below: [recon-findings](recon-findings.md).
 
 ## 0. Scope and layering
 
@@ -22,7 +22,7 @@ Status: PROPOSED for review. Specifies the **types and guarantees** that Phase 1
 | G5 | **Nothing is fetched outside the manifest scope.** | single egress component; exact host allowlist; no URLs from document content | security tests with fake resolver ([source-safety-contract](source-safety-contract.md)) |
 | G6 | **Every artifact is traceable** to run, manifest version, code version, safety-policy version, request log. | provenance fields below | constraint test: no `document_version` without `ingest_run_id` |
 
-> **Open clarification OC-1.** [implementation-roadmap](../implementation-roadmap.md) Phase 1 says "re-run adds zero rows". G3 reads this as *zero source-layer rows*; run bookkeeping rows are appended. If the intent is literally zero rows in all tables, per-candidate `ingest_result` rows for unchanged items would be replaced by counts in `ingest_run.stats`. Needs your decision before Phase 1B (small, no ADR impact).
+> **OC-1 — RESOLVED.** The roadmap's "re-run adds zero rows" meant: a re-run creates **no duplicate logical source-layer artifacts or document versions**; a new `ingest_run` and run-scoped bookkeeping (`ingest_result`) may legitimately be recorded; and `document_version_location.last_seen` is the explicitly allowed mutable source-layer field. The roadmap now says so and G3 above is the authoritative wording.
 
 ## 2. Idempotency keys (consolidated)
 
@@ -142,3 +142,33 @@ DISCOVERED → (gate) → FETCHED → VALIDATED → STORED → VERSIONED
 ## 6. What Phase 1B must not do (reaffirmed)
 
 No bulk enumeration beyond manifest candidates; no listing pagination beyond reviewed entry points; no fetching of URLs found inside documents; no parsing; no OCR; no new service/database/broker (H15); no change to any ADR (H5).
+
+## 9. Phase 1C implementation notes
+
+Status vocabulary used here: **implemented** (code exists), **tested** (an automated test exercises it), **observed** (a fact seen in this environment), **unverified**. Nothing here is a measurement of performance, accuracy, recall or cost.
+
+| Guarantee | Implemented in | Tested by (offline unless marked) |
+|---|---|---|
+| G1 same hash → one artifact | `raw_artifact.content_hash` UNIQUE; `ON CONFLICT` insert-or-get; blob `put` is a no-op for identical bytes | `tests/integration/test_pipeline_contract.py` on the in-memory **and** PostgreSQL repositories; concurrent-writer test (PostgreSQL) |
+| G2 changed hash → new version + alert | `UNIQUE(document_id, content_hash)`; `CONTENT_CHANGED_UNDER_STABLE_REF` when a `source_reference` exists | same file; earlier version asserted preserved |
+| G3 re-run → no duplicate logical ingestion | natural-key `ON CONFLICT`; `last_seen` is the only mutable column (trigger-enforced) | contract test + Hypothesis idempotency properties (`tests/unit/test_properties.py`) |
+| G4 invalid → quarantine, never publish | separate quarantine blob store; `quarantine_record`; DB trigger blocks any `raw_artifact`/`document_version` whose hash has a quarantine record; there is **no release or force-publish path** | contract test (quarantine + zero versions); `tests/integration/test_source_layer_db.py` (PostgreSQL) |
+| G5 nothing outside the manifest | exact host allowlist, per-hop revalidation, DNS/IP checks, no URL taken from document content | `tests/security/*` |
+| G6 traceable | `document_version` → `ingest_run` (manifest hash/version, code version, safety-policy version, authorisation reference) + `manifest_entry_index` + unchanged `manifest_status_labels`; `retrieved_at` | constraint tests incl. catalog check of the FKs / NOT NULLs |
+
+**Gate.** `run_ingest` checks the gate before it constructs any egress object. A LIVE run with a closed gate records `ABORTED(GATE_CLOSED)` and touches no resolver, transport or socket; tested against the real committed manifest, with the real network adapters under the socket guard, and with tripwire doubles. DRY_RUN is always permitted but refuses network-capable components and persistent repositories (so synthetic content cannot reach the source layer); a database trigger additionally requires a `LIVE` run for any source-layer row. The committed manifest still has `ingestion_authorized: false`.
+
+**Deliberate deviations and decisions** (each is a reviewable choice, not an accident):
+
+1. **No `fetch_request` table.** The contract names a request log; Phase 1C does not create the table (it was not needed for idempotency or provenance). Request-level facts are kept in `document_version_location.http_meta` (status, validators, final URL, redirect chain, attempts) and `quarantine_record`, and sanitised events go to the `regintelgraph.ingestion` logger. Whether a table is warranted is a Phase 1D question.
+2. **`AbortReason.INTERNAL_ERROR`** was added so an unexpected infrastructure failure closes the run instead of leaving it `RUNNING` (which would block later runs through the one-RUNNING-run-per-source index). A crashed process that cannot close its run needs an operator to mark it `ABORTED(OPERATOR_CANCEL)`.
+3. **Manifest `crawl` parameter names.** The loader defines 16 required numeric parameters (`min_delay_seconds`, `connect_/read_/total_timeout_seconds`, `max_bytes_listing|detail_page|attachment`, `max_url_length`, `max_redirects`, `max_attempts`, `backoff_base_seconds`, `backoff_max_seconds`, `candidate_deadline_seconds`, `circuit_breaker_threshold`, `max_expansion_ratio`, `pdf_eof_tail_bytes`). **The committed manifest defines none of them** (its `crawl` block has only `status` and `user_agent_contact`, and was deliberately left unchanged), so `crawl.limits()` is `None` and a LIVE run refuses to start with `ABORTED(POLICY_VIOLATION)` until a human supplies every value. `max_expansion_ratio` and `pdf_eof_tail_bytes` implement guards the safety contract requires (§5) but whose values it leaves open. No production number is invented; tests use explicitly synthetic limits.
+4. **Quarantine reason mapping** (the contract's code list has no finer codes): scheme → `SCHEME_NOT_HTTPS`; host/port/userinfo/IP-literal → `HOST_NOT_ALLOWED`; viewer-wrapper → `VIEWER_WRAPPER_URL`; path/query/length/encoding violations → `MANIFEST_SCOPE_MISMATCH`; unsupported `Content-Encoding` → `CONTENT_TYPE_MISMATCH`; a corrupt or truncated body → `PDF_SANITY_FAILED`. Exceeding the redirect-hop limit is `FAILED_PERMANENT` (`REDIRECT_REJECTED`) with no quarantine record.
+5. **Repository variants.** One contract suite runs against an in-memory repository (offline; used by dry-run and property tests) and PostgreSQL; both must agree.
+
+**Not implemented in Phase 1C (stated, not hidden):**
+
+- **Detail-page → attachment discovery.** The attachment link element on SEBI detail pages is `UNVERIFIED` (never observed as raw HTML), so no HTML extraction was written against a guess. A candidate without a `document_url` ends `UNRESOLVED(NO_ATTACHMENT_URL_IN_MANIFEST)`; no listing or detail page is fetched by Phase 1C code paths. The `LISTING`/`DETAIL_PAGE` purposes exist in URL validation only.
+- **Structural PDF validation and `AUTHORITY_MISMATCH`.** Phase 1C does byte-level triage only (media type, `%PDF-` header, `%%EOF` near the end, a bounded scan rejecting `/Encrypt`, `/JavaScript`, `/JS`, `/Launch`, `/OpenAction`, `/EmbeddedFile`). It does not parse PDF structure, cannot see `#`-hex-obfuscated names, and cannot check which authority a document claims. That needs the Phase 3 sandboxed parser.
+- **Listing-vs-manifest diff** in the ingest report (no listing is fetched).
+- **Source-access facts remain unresolved and unchanged:** robots.txt, permission for automated retrieval, copyright/reproduction scope, listing pagination method, byte-level verification of the canonical Master Circular.

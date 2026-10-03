@@ -1,6 +1,6 @@
 # Phase 1 — Local PostgreSQL + pgvector Development Plan
 
-Status: PROPOSED for review. **Plan only — nothing was installed or started in Phase 1A.** The absence of Postgres in the Stage 1 environment is an environment fact, not an architecture failure ([stage-1-review](../stage-1-review.md) §1). This plan makes the first database reproducible without cloud services: **no AWS, no Supabase, no managed service** is on the core development path ([ADR-002](../adr/ADR-002-primary-storage.md): one Postgres, modular monolith). Related: [tooling-bootstrap-plan](tooling-bootstrap-plan.md), [ingestion-contract](ingestion-contract.md).
+Status: **IMPLEMENTED in Phase 1C** (helper `scripts/pg-dev.sh`, runner `scripts/migrate.py`, harness `tests/support/pgfixtures.py`; see the checked criteria in §7). Originally a Phase 1A plan: **nothing was installed or started in Phase 1A.** The absence of Postgres in the Stage 1 environment is an environment fact, not an architecture failure ([stage-1-review](../stage-1-review.md) §1). This plan makes the first database reproducible without cloud services: **no AWS, no Supabase, no managed service** is on the core development path ([ADR-002](../adr/ADR-002-primary-storage.md): one Postgres, modular monolith). Related: [tooling-bootstrap-plan](tooling-bootstrap-plan.md), [ingestion-contract](ingestion-contract.md).
 
 Environment facts (`VERIFIED` in Phase 1A): no `psql`/`pg_config`, no Docker/Podman; Ubuntu 24.04; Ubuntu archive candidates `postgresql-16` 16.13 and `postgresql-16-pgvector` 0.6.0; the sandbox network allowlist includes the Ubuntu archive but not the PostgreSQL project's own apt repository (`UNVERIFIED` whether a newer pgvector is reachable by other means).
 
@@ -26,7 +26,7 @@ Not in scope for Phase 1: embeddings, HNSW/IVFFlat indexes, FTS configuration, g
 
 One-time prerequisite (root): install `postgresql-16` and `postgresql-16-pgvector` from the Ubuntu archive. A package install also registers a default system cluster; **the project does not use it** and the setup script must not touch it.
 
-Planned helper `scripts/pg-dev.sh` (to be written and tested in Phase 1B; commands shown are the intended shape, **not run in Phase 1A**):
+Helper `scripts/pg-dev.sh` (implemented and exercised in Phase 1C: `init`, `start`, `stop`, `status`, `reset`, `url`, `test-url`, `psql`). It refuses to run as root, never touches a system cluster, installs no operating-system packages (it reports clearly if the PostgreSQL binaries are absent), configures the cluster socket-only (`listen_addresses = ''`), UTC and UTF-8, and `reset` deletes only `local_data/postgres` after proving it resolves inside the repository and contains `PG_VERSION`. Original intended shape:
 
 | Subcommand | Intended action |
 |---|---|
@@ -58,14 +58,14 @@ Documented as an alternative that must run the **same** migration runner and tes
 
 1. `uv sync --frozen`
 2. `scripts/pg-dev.sh init && scripts/pg-dev.sh start`
-3. `python -m <migration-runner> apply` (OD-02 decides the runner)
+3. `python scripts/migrate.py apply --dsn "$(scripts/pg-dev.sh url)"` (the OD-02 runner)
 4. `pytest -m "not postgres"` — offline unit/security/regression (no database)
-5. `pytest -m postgres` — integration, needs the cluster
+5. `RIG_TEST_DATABASE_URL="$(scripts/pg-dev.sh test-url)" pytest -m postgres` — integration, needs the cluster (the harness creates and drops only `rig_test_*` databases and refuses any non-local URL)
 6. `scripts/pg-dev.sh stop`
 
 `RIG_OFFLINE_TESTS=1` remains the default; the `postgres` marker is opt-out in environments without a database, and **CI always runs it** so a skipped suite cannot hide a regression.
 
-## 5. Migration conventions (inputs to OD-02, not a decision)
+## 5. Migration conventions (OD-02 **resolved** — see [tooling-bootstrap-plan](tooling-bootstrap-plan.md) §3)
 
 Forward-only numbered SQL files in `migrations/`; one transaction per file; each file's checksum recorded; every migration lands with its constraint test; no auto-generated DDL (data-model §6). First migrations create only source-layer and run-layer tables: `source`, `ingest_run`, `raw_artifact`, `regulatory_document`, `document_version`, `document_version_location`, plus the two tables proposed by the ingestion contract (`ingest_result`, `quarantine_record`) and `job`/`job_event` skeletons. DDL for later phases (nodes, anchors, embeddings, relations) is **not** created in Phase 1B.
 
@@ -76,16 +76,18 @@ Forward-only numbered SQL files in `migrations/`; one transaction per file; each
 | PG-1 | Ubuntu-archive pgvector (0.6.0) may lack features needed later (filtered-search behaviour; A-05/OD-05) — `UNVERIFIED` | smoke-test only now; decide the install route (newer package, build from source, container) at Phase 4 with a benchmark-backed reason |
 | PG-2 | Package install needs root once; may be impossible on some dev machines | Path C (Docker) documented; CI path unaffected |
 | PG-3 | Package install creates a default system cluster that could be confused with the project cluster | script never touches it; project cluster is socket-only under `local_data/` |
-| PG-4 | Tests that mutate a shared database | per-module template clone + destructive-operation guard |
+| PG-4 | Tests that mutate a shared database | template clone + destructive-operation guard. **Refinement made in Phase 1C:** each *test* (not each module) clones the migrated template, which is stricter isolation by the same mechanism |
 | PG-5 | Constraint/trigger logic drifting from the contract | schema snapshot test + one test per invariant G1–G6 |
 | PG-6 | Single-CPU/4 GB machine slows integration tests | keep fixtures tiny; template-database cloning; heavy suites stay manual |
 
-## 7. Exit criteria for "local Postgres ready" (Phase 1B)
+## 7. Exit criteria for "local Postgres ready" (Phase 1B → checked in Phase 1C)
 
-- [ ] a new checkout reaches a migrated, empty database with the documented commands, offline apart from the one-time package install;
-- [ ] migrate-from-empty, checksum-tamper and rerun-no-op tests pass;
-- [ ] constraint, immutability, provenance and transaction-rollback tests pass;
-- [ ] concurrent-writer idempotency test passes;
-- [ ] `CREATE EXTENSION vector` smoke passes (or is recorded as a failed prerequisite with the reason);
-- [ ] CI `integration` job green with the same suite;
-- [ ] destructive-operation guard demonstrably refuses a non-local URL.
+Checked means exercised in the Phase 1C sandbox (`observed`/`tested`); it is not a claim about any other machine.
+
+- [x] a checkout reaches a migrated, empty database with the documented commands (`pg-dev.sh init/start`, `migrate.py apply`); the one-time package install was `postgresql-16` + `postgresql-16-pgvector` from the Ubuntu archive;
+- [x] migrate-from-empty, checksum-tamper and rerun-no-op tests pass;
+- [x] constraint, immutability, provenance and transaction-rollback tests pass (including that a migration and its bookkeeping row commit atomically);
+- [x] concurrent-writer idempotency test passes (and concurrent migration runners, concurrent run starts and concurrent job claims);
+- [x] `CREATE EXTENSION vector` smoke passes — **observed**: PostgreSQL 16.15 and pgvector 0.6.0 from the Ubuntu archive in this sandbox. No vector table, HNSW or IVFFlat index exists, and no index type is claimed optimal (OD-05 stays open);
+- [ ] CI `integration` job green with the same suite — the job is configured (`.github/workflows/foundation-checks.yml`) but **has not been executed on GitHub from here**; this stays unchecked until a real run is observed;
+- [x] destructive-operation guard demonstrably refuses a non-local URL and any database name outside `rig_test_*` (`tests/security/test_pg_harness_guard.py`).

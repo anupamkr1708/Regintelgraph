@@ -2,7 +2,7 @@
 
 **Evidence-grounded regulatory intelligence and compliance-impact analysis.**
 
-> Status: **Stage 1 — architecture foundation.** No application code exists yet. Nothing here is production-ready, and no performance or quality numbers are claimed: every such number must come from a reproducible experiment (see [evaluation](docs/evaluation.md)).
+> Status: **Phase 1C (contract-first implementation) is implemented locally and awaiting review.** The first code exists (`packages/domain`, `packages/ingestion`, SQL migrations, offline and PostgreSQL tests); the CI workflow is configured but has not yet been observed running on GitHub. **Live SEBI ingestion remains disabled** — the manifest gate is closed (`ingestion_authorized: false`) pending the human source-access review ([source-access-report](docs/phase1/source-access-report.md)); no live corpus has been ingested and sub-stage 1D has not started. No performance or quality numbers are claimed: every such number must come from a reproducible experiment (see [evaluation](docs/evaluation.md)).
 
 ## Overview
 
@@ -31,7 +31,7 @@ Current-requirement lookup · version/amendment comparison · "as of date X" app
 
 ## Initial scope
 
-India · SEBI · one focused corpus (proposed: Mutual Funds — see [ADR-009](docs/adr/ADR-009-initial-domain-scope.md), pending your review). RBI, SEC/EDGAR and others are out of scope until the SEBI pipeline is measured.
+**Initial scope: India · SEBI · Mutual Funds** ([ADR-009](docs/adr/ADR-009-initial-domain-scope.md)). This is a corpus-selection decision for an engineering project; it is not a legal-compliance determination. AIF, RBI, SEC/EDGAR, Investment Advisers and any second corpus are out of scope until the SEBI pipeline is measured.
 
 ## Technology direction (proposed, see ADRs)
 
@@ -47,14 +47,17 @@ Trusted control plane vs untrusted regulatory content. Retrieved text is data, n
 
 ## Development
 
-- Constitution for humans and AI assistants: [AGENTS.md](AGENTS.md), [CLAUDE.md](CLAUDE.md).
-- Foundation checks (stdlib only): `python scripts/check_foundation.py`
+- Engineering constitution (single canonical file, for humans and AI assistants): [AGENTS.md](AGENTS.md).
+- Foundation checks (stdlib only): `python scripts/check_foundation.py`; import boundaries: `python scripts/check_imports.py`; secret scan: `python scripts/check_secrets.py`
+- Setup (Python 3.12 via `uv`): `uv sync --frozen`. Lint/types: `uv run ruff check . && uv run ruff format --check . && uv run mypy`
+- Offline tests (no network, no database, no paid APIs): `uv run pytest -m "not postgres"`
+- Local PostgreSQL (project-local, socket-only; Docker not required — [plan](docs/phase1/local-postgres-plan.md)): `scripts/pg-dev.sh init && scripts/pg-dev.sh start`, then `python scripts/migrate.py apply --dsn "$(scripts/pg-dev.sh url)"` and `RIG_TEST_DATABASE_URL="$(scripts/pg-dev.sh test-url)" uv run pytest -m postgres`
 - Read-only environment report: `./scripts/inspect_env.sh`
 - Copy `.env.example` to `.env` for local settings (placeholders only; `.env` is git-ignored).
 - Core tests must run offline with deterministic stubs ([testing strategy](docs/testing-strategy.md)).
 
 ## Roadmap
 
-Phases 0–18 in [implementation-roadmap](docs/implementation-roadmap.md). Next: Phase 1 (source manifest + ingestion) after your review of [stage-1-review](docs/stage-1-review.md).
+Phases 0–18 in [implementation-roadmap](docs/implementation-roadmap.md). Phase 1 is delivered in sub-stages 1A–1D; 1A–1C are done. Next: review of Phase 1C, then the human source-access decision that unblocks 1D (controlled live sample). See [stage-1-review](docs/stage-1-review.md).
 
 Documentation index: [docs/README.md](docs/README.md).

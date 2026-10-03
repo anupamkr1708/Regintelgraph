@@ -10,12 +10,22 @@ Empty workspace, not a git repository. Ubuntu 24.04 (x86_64), 1 CPU, ~4 GB RAM. 
 
 Modular monolith (ADR-001) · Postgres + pgvector + FTS + content-addressed blobs; Redis/Airflow/broker deferred (ADR-002) · hybrid retrieval with RRF as a *hypothesis* tested by ablation (ADR-003) · relational graph with evidence-bound edges, Neo4j deferred with triggers (ADR-004) · bounded state-machine orchestrator, read-only tools (ADR-005) · provider-agnostic model interfaces, selection by benchmark (ADR-006) · explicit-relation temporal policy, no recency heuristics (ADR-007) · evidence anchors + citation by handle + deterministic-first verification (ADR-008) · proposed first domain SEBI Mutual Funds (ADR-009, **needs your decision**).
 
+## 2b. Phase 1 status (updated in Phase 1C)
+
+| State | Status |
+|---|---|
+| Phase 1A reconnaissance / 1B contracts and plans | done |
+| Phase 1C contract-first implementation | **implemented locally; tested offline; integration-tested against a project-local PostgreSQL 16** |
+| CI workflow | configured; **not yet observed running on GitHub** |
+| Source-access gate (human review) | **closed** — `ingestion_authorized: false`; robots.txt, automated-retrieval permission, copyright/reproduction scope, listing pagination and canonical Master Circular byte verification are unresolved |
+| Phase 1D controlled live sample / live corpus ingested | **not started; blocked on the gate** |
+
 ## 3. Open decisions
 
 | ID | Decision | Needed by |
 |---|---|---|
-| OD-01 | Confirm initial domain (ADR-009) | Before Phase 1 |
-| OD-02 | Migration tool | Phase 1–2 |
+| OD-01 | Confirm initial domain (ADR-009) — **RESOLVED**: India · SEBI · Mutual Funds (not a legal-compliance determination) | Before Phase 1 |
+| OD-02 | Migration tool — **RESOLVED** (Phase 1C): minimal in-repository forward-only SQL runner (`scripts/migrate.py`) | Phase 1–2 |
 | OD-03 | PDF/HTML parsing library (spike on real documents) | Phase 3 |
 | OD-04 | Sparse ranking: `ts_rank` vs BM25 extension vs app-side BM25 | Phase 5 |
 | OD-05 | Vector index type (exact/HNSW/IVFFlat) | Phase 5 |
@@ -52,7 +62,7 @@ Modular monolith (ADR-001) · Postgres + pgvector + FTS + content-addressed blob
 | RK-04 | PDF structure quality (tables, headers, scans) | Flat-text fallback; parse reports; OD-03 spike |
 | RK-05 | Over-abstention reduces usefulness | Report false-abstain separately; tune with benchmark |
 | RK-06 | Model verifier unreliability | Deterministic-first, calibrated on labels, never sole judge |
-| RK-07 | AI-assisted drift | AGENTS.md/CLAUDE.md, ADR rule, `check_foundation.py`, ratchets |
+| RK-07 | AI-assisted drift | AGENTS.md (single constitution), ADR rule, `check_foundation.py`, ratchets |
 | RK-08 | Scope creep | ADR-009; roadmap gates |
 | RK-09 | Weak lexical ranking in Postgres FTS | OD-04 ablation |
 | RK-10 | Graph extraction quality and human review burden | Curated vocabulary; review only high-impact predicates; demote graph if no gain |

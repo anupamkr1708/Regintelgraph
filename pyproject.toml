@@ -1,0 +1,74 @@
+# RegIntelGraph — single project definition for the modular monolith (ADR-001).
+# Dependency versions are resolved and recorded by `uv.lock` (hash-locked, committed); none are pinned by hand here.
+# Every dependency is justified in docs/phase1/tooling-bootstrap-plan.md §9 (AGENTS.md "Dependencies").
+
+[project]
+name = "regintelgraph"
+version = "0.0.0"
+description = "Evidence-grounded regulatory intelligence and compliance-impact analysis (modular monolith)."
+readme = "README.md"
+requires-python = ">=3.12,<3.13"
+license = "Apache-2.0"
+dependencies = [
+    "PyYAML",           # manifest parsing (yaml.safe_load only; enforced by a test)
+    "psycopg[binary]",  # PostgreSQL driver (sync API); the binary extra bundles libpq so no system libpq is required
+]
+
+[dependency-groups]
+dev = [
+    "pytest",
+    "hypothesis",
+    "ruff",
+    "mypy",
+]
+
+[tool.uv]
+# Virtual project: the repository root is the import root (namespaces `packages.*`, `apps.*`, `workers.*`), so code is
+# importable in place with no install step. See docs/phase1/tooling-bootstrap-plan.md §8.
+package = false
+
+[tool.pytest.ini_options]
+minversion = "8.0"
+testpaths = ["tests"]
+pythonpath = ["."]
+addopts = "-ra --strict-markers --strict-config --import-mode=importlib"
+markers = [
+    "postgres: needs a local PostgreSQL (CI always runs these; see docs/phase1/local-postgres-plan.md)",
+]
+
+[tool.ruff]
+line-length = 140
+target-version = "py312"
+extend-exclude = ["local_data", "logs"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP", "S", "C4", "SIM", "RUF"]
+ignore = [
+    "S101",  # assert is used by tests and for narrowing; security-relevant checks never rely on assert
+]
+
+[tool.ruff.lint.per-file-ignores]
+# Tests: synthetic secrets/IPs/paths, fixed-table SQL helpers and long SQL/fixture lines are intentional.
+"tests/**" = ["S104", "S105", "S106", "S108", "S311", "S603", "S607", "S608", "B011", "RUF012", "E501", "C408"]
+"scripts/**" = ["S603", "S607"]
+# Long SQL string literals are kept on one line each so a statement stays greppable.
+"packages/ingestion/pgrepo.py" = ["E501", "S608"]
+"packages/ingestion/jobs.py" = ["E501"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["packages", "apps", "workers", "scripts", "tests"]
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+mypy_path = "."
+explicit_package_bases = true
+namespace_packages = true
+files = ["packages", "scripts", "tests/support"]
+warn_unreachable = true
+
+[[tool.mypy.overrides]]
+# PyYAML ships no inline types and adding types-PyYAML is an extra dependency we do not need: the parsed value is
+# validated structurally by packages/ingestion/manifest.py before use.
+module = ["yaml", "yaml.*"]
+ignore_missing_imports = true

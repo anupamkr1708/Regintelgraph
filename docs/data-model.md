@@ -81,4 +81,4 @@ CREATE INDEX ON chunk USING gin (tsv);
 
 ## 6. Migrations
 
-Versioned, forward-only SQL migrations in `migrations/` with a tested apply-from-empty path; tool choice recorded at Phase 2 (**OD-02**). No auto-generated schema trusted without review. Every migration ships with a constraint test.
+Versioned, forward-only SQL migrations in `migrations/` with a tested apply-from-empty path; tool: a minimal in-repository forward-only SQL runner, `scripts/migrate.py` (**OD-02 resolved** in Phase 1C; numbered files, one transaction per migration, checksum recorded, edited-after-applied rejected, no down migrations, no autogeneration). The source/runtime-layer schema Phase 1 needs is `migrations/0001_source_layer.sql`; Phase 2 extends it. No auto-generated schema trusted without review. Every migration ships with a constraint test.
