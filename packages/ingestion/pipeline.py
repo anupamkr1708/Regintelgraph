@@ -22,7 +22,9 @@ from packages.domain.ingest import (
     AbortReason,
     CandidateStage,
     FetchFailure,
+    FetchOutcome,
     FetchPurpose,
+    FetchRequest,
     IngestOutcome,
     IngestResult,
     IngestRun,
@@ -32,14 +34,14 @@ from packages.domain.ingest import (
 )
 from packages.domain.manifest import ManifestCandidate, SafetyLimits, SourceManifest
 from packages.ingestion.clock import new_uuid7
-from packages.ingestion.egress import EgressClient, FetchedResponse, build_user_agent
+from packages.ingestion.egress import AttemptAudit, EgressClient, FetchedResponse, build_user_agent
 from packages.ingestion.errors import BlobStoreError, CircuitOpenError, FetchError, ModeViolation
-from packages.ingestion.logsafe import LOGGER, neutralize
+from packages.ingestion.logsafe import LOGGER, neutralize, safe_url
 from packages.ingestion.ports import BlobStore, Clock, HttpTransport, Resolver, Rng
 from packages.ingestion.repository import ArtifactIngest, QuarantineIngest, Repository
 from packages.ingestion.validate import Rejection, sniff_media_type, validate_response
 
-SAFETY_POLICY_VERSION = "source-safety-contract@phase-1b"
+SAFETY_POLICY_VERSION = "source-safety-contract@phase-1c"
 DRY_RUN_CONTACT = "dry-run.invalid"
 OUT_OF_SCOPE_TIER = "context_out_of_window"
 
@@ -282,6 +284,28 @@ def _process_candidate(
             )
         )
 
+    def record_request(a: AttemptAudit) -> None:
+        """Durable per-attempt audit (ingestion-contract §3.2). Called by the egress client after every attempt."""
+        repo.record_fetch_request(
+            FetchRequest(
+                fetch_request_id=new_id(),
+                ingest_run_id=run_id,
+                candidate_key=key,
+                attempt=a.attempt,
+                purpose=FetchPurpose.ATTACHMENT,
+                requested_url=a.requested_url,
+                final_url=a.final_url,
+                redirect_chain=a.redirect_chain,
+                status=a.status,
+                outcome=a.outcome,
+                selected_headers=a.headers,
+                retrieved_at=a.retrieved_at,
+                elapsed_seconds=a.elapsed_seconds,
+                policy_version=config.safety_policy_version,
+                content_hash=ContentHash.parse(a.content_hash) if a.content_hash else None,
+            )
+        )
+
     scope = _out_of_scope(manifest, c)
     if scope is not None:
         return finish(IngestOutcome.OUT_OF_SCOPE, scope)
@@ -294,11 +318,32 @@ def _process_candidate(
         target = egress.check_url(c.document_url, FetchPurpose.ATTACHMENT)  # static checks only; nothing was sent
     except FetchError as err:
         assert err.quarantine is not None
-        return quarantine(err.quarantine, err.detail, url=c.document_url, attempts=0)
+        # Nothing was sent. The input is recorded in its log-safe form (no userinfo/query/fragment): it failed validation, so it
+        # is an echo of an untrusted string, not request provenance; the exact input remains in the hash-pinned manifest.
+        rejected_url = safe_url(c.document_url)
+        repo.record_fetch_request(
+            FetchRequest(
+                fetch_request_id=new_id(),
+                ingest_run_id=run_id,
+                candidate_key=key,
+                attempt=1,
+                purpose=FetchPurpose.ATTACHMENT,
+                requested_url=rejected_url,
+                final_url=None,
+                redirect_chain=(),
+                status=None,
+                outcome=FetchOutcome.URL_REJECTED,
+                selected_headers={},
+                retrieved_at=clock.now(),
+                elapsed_seconds=0.0,
+                policy_version=config.safety_policy_version,
+            )
+        )
+        return quarantine(err.quarantine, err.detail, url=rejected_url, attempts=0)
 
     validators = repo.find_validators(key, target.url)
     try:
-        resp = egress.fetch(c.document_url, FetchPurpose.ATTACHMENT, validators=validators)
+        resp = egress.fetch(c.document_url, FetchPurpose.ATTACHMENT, validators=validators, on_attempt=record_request)
     except FetchError as err:
         if err.quarantine is not None:
             return quarantine(err.quarantine, err.detail, url=target.url, attempts=err.attempts)

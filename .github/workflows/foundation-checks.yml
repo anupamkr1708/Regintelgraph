@@ -1,5 +1,5 @@
 # Staged CI (docs/phase1/tooling-bootstrap-plan.md §5; AGENTS.md H13/H15; security.md T-16, T-18).
-#   foundation -> lint-types -> offline-tests -> integration (PostgreSQL service) ; secret-scan runs independently.
+#   foundation (incl. test-count ratchet) -> lint-types -> offline-tests -> integration (PostgreSQL service) ; secret-scan runs independently.
 # Principles: offline jobs have NO network access requirement beyond installing locked dependencies, NO paid APIs and NO
 # secrets; there is no job that crawls SEBI or any real source and no live URL in any test; least-privilege token.
 name: foundation-checks
@@ -35,6 +35,10 @@ jobs:
       # Stdlib-only, offline, no secrets, no paid APIs (H13). Also fails on any stale governance reference.
       - name: Foundation checks
         run: python scripts/check_foundation.py
+      # Test-count ratchet (testing-strategy §4.3): security / regression / integration test counts may not fall below the
+      # checked-in baseline (tests/ratchet-baseline.json) without a reviewed, reasoned --update. Stdlib only, offline.
+      - name: Test-count ratchet
+        run: python scripts/check_test_ratchet.py
 
   lint-types:
     name: lint + types + import boundaries
@@ -89,9 +93,14 @@ jobs:
     needs: [lint-types, offline-tests]
     services:
       postgres:
-        # PostgreSQL 16 image that ships the pgvector extension (used for the CREATE EXTENSION smoke test ONLY).
-        # The image digest is not pinned here: no registry access was available when this file was written (UNVERIFIED).
-        image: pgvector/pgvector:pg16
+        # PostgreSQL 16 image that ships the pgvector extension (used for the CREATE EXTENSION smoke test ONLY), pinned by
+        # IMMUTABLE digest: the mutable tag `pgvector/pgvector:pg16` is documented to move (the tag-based job already ran against a
+        # different image than the one this repository was developed on). The digest is the multi-platform INDEX digest of the
+        # `pg16` tag observed on Docker Hub on 2026-10-04: PostgreSQL 16.15, pgvector v0.8.7, Debian bookworm.
+        # EVIDENCE LEVEL: OBSERVED on Docker Hub (index digest identical on the linux/amd64 and linux/arm64 pages). NOT pull-tested
+        # by the author — if the digest were wrong this job FAILS at image pull; it can never silently run another image.
+        # Record, re-verification command and update procedure: docs/phase1/local-postgres-plan.md §2 "CI image pin record".
+        image: pgvector/pgvector@sha256:7b822b0aac60967beb1ea5e576b8602c94c300a157d187f385ae3e0da199b90a
         env:
           POSTGRES_PASSWORD: postgres   # throwaway service-container credential, reachable only from this job; not a secret
         ports:

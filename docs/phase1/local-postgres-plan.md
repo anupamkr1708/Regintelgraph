@@ -40,7 +40,26 @@ Why a socket-only cluster: no port conflicts, nothing reachable from the network
 
 ### Path B — CI service container (mandatory for CI)
 
-The CI `integration` job uses a Postgres service container with the pgvector extension available (an image such as `pgvector/pgvector` pinned by digest at adoption; tag/digest `UNVERIFIED` here). Same migrations, same tests. CI never uses cloud databases.
+The CI `integration` job uses a Postgres service container with the pgvector extension available, **pinned by immutable digest** (see the pin record below). Same migrations, same tests. CI never uses cloud databases.
+
+#### CI image pin record
+
+| Field | Value | Evidence |
+|---|---|---|
+| Image reference in CI | `pgvector/pgvector@sha256:7b822b0aac60967beb1ea5e576b8602c94c300a157d187f385ae3e0da199b90a` | **observed** |
+| What the digest is | the multi-platform *index* digest of the `pg16` tag, observed on Docker Hub on 2026-10-04 | **observed** — identical on the `linux/amd64` and `linux/arm64` image pages |
+| `linux/amd64` image digest | `sha256:a97d77306ff47cc1d8add4d000cec2207da2e110746318df3137ce53c337ca30` | **observed** (the platform GitHub-hosted runners use) |
+| PostgreSQL | 16.15 (`PG_VERSION=16.15-1.pgdg12+2`, Debian bookworm) | **observed** in the image metadata page |
+| pgvector | v0.8.7 (built from the upstream `v0.8.7` tag); the `0.8.7-pg16` tag carried the same digest | **observed** |
+| Reason selected | the digest the `pg16` tag resolved to when the pin was introduced, i.e. the image the previously mutable reference meant, frozen. The tag is mutable (an earlier search-engine snapshot listed a different `pg16` digest), so an unpinned reference can change the test environment without any commit | reasoning |
+| Pull-tested / executed by the author | **no** — the sandbox has no Docker and cannot reach any registry host (`host_not_allowed`), so neither `docker buildx imagetools inspect` nor a run of the suite against this exact image was possible | **unverified** |
+| Local development PostgreSQL | 16.15 + pgvector 0.6.0 (Ubuntu archive) — same PostgreSQL minor, **different pgvector version**; the suite only runs `CREATE EXTENSION vector` against it, but a green run on the pinned image is what actually verifies that | **observed** |
+
+Failure mode if the recorded digest were wrong: the `integration` job fails at image pull. It cannot silently run a different image.
+
+**Re-verification (human, with Docker):** `docker buildx imagetools inspect pgvector/pgvector:pg16` must still list the index digest above while the tag has not moved; for the pinned digest itself run `docker buildx imagetools inspect pgvector/pgvector@sha256:7b822b0aac60967beb1ea5e576b8602c94c300a157d187f385ae3e0da199b90a` and confirm it resolves to a `linux/amd64` manifest `sha256:a97d7730…`, then pull it and run the PostgreSQL suite.
+
+**Update procedure:** a digest change is a reviewed change — resolve the new digest with the command above, run the full PostgreSQL suite against exactly that image, update this record and the workflow together. `tests/security/test_ci_image_pinned.py` fails if the workflow references any service/container image by tag instead of digest, or if the workflow and this record disagree. Do not move to `pg17` or another variant here; that is an architecture/ADR matter, not a CI refresh.
 
 ### Path C — optional Docker for developers who already have it
 
@@ -89,5 +108,5 @@ Checked means exercised in the Phase 1C sandbox (`observed`/`tested`); it is not
 - [x] constraint, immutability, provenance and transaction-rollback tests pass (including that a migration and its bookkeeping row commit atomically);
 - [x] concurrent-writer idempotency test passes (and concurrent migration runners, concurrent run starts and concurrent job claims);
 - [x] `CREATE EXTENSION vector` smoke passes — **observed**: PostgreSQL 16.15 and pgvector 0.6.0 from the Ubuntu archive in this sandbox. No vector table, HNSW or IVFFlat index exists, and no index type is claimed optimal (OD-05 stays open);
-- [ ] CI `integration` job green with the same suite — the job is configured (`.github/workflows/foundation-checks.yml`) but **has not been executed on GitHub from here**; this stays unchecked until a real run is observed;
+- [ ] CI `integration` job green with the same suite — **not met**. The first observed GitHub run (`a90f5df`) *failed* in this job: `test_database_settings_the_project_relies_on` compared `SHOW timezone` with the literal `UTC`, while a Docker-style server reports `Etc/UTC` (reproduced locally under CI-equivalent conditions; the CI log itself was not accessible). The test now asserts the required behaviour (zero UTC offset in winter and summer). This stays unchecked until a green GitHub run is actually observed after the fix;
 - [x] destructive-operation guard demonstrably refuses a non-local URL and any database name outside `rig_test_*` (`tests/security/test_pg_harness_guard.py`).

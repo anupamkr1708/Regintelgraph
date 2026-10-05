@@ -61,6 +61,7 @@ def test_no_tables_from_later_phases_exist(pg_empty_dsn: str) -> None:
         "document_version_location",
         "ingest_result",
         "quarantine_record",
+        "fetch_request",  # migration 0002: Phase 1 runtime request audit (ingestion-contract §3.2), not a later-phase table
         "job",
         "job_event",
         "schema_migration",
@@ -236,7 +237,16 @@ def test_cli_without_a_dsn_is_a_usage_error(monkeypatch: pytest.MonkeyPatch, cap
 
 def test_database_settings_the_project_relies_on(pg_conn: psycopg.Connection) -> None:  # type: ignore[type-arg]
     assert pg_conn.execute("SHOW server_encoding").fetchone() == ("UTF8",)
-    assert pg_conn.execute("SHOW timezone").fetchone() == ("UTC",)
+    # Behaviour, not a provider-specific name: the session timezone must be UTC-equivalent, i.e. a zero UTC offset at
+    # every instant. Valid spellings differ by environment ('UTC' on a locally configured cluster, 'Etc/UTC' in
+    # Docker-style images), so the zone *name* is deliberately not asserted. Checking a winter and a summer instant also
+    # rejects DST zones (e.g. Europe/London is zero only in winter).
+    offsets = pg_conn.execute(
+        "SELECT extract(timezone FROM timestamptz '2026-01-15 12:00:00+00')::int,"
+        " extract(timezone FROM timestamptz '2026-07-15 12:00:00+00')::int,"
+        " (timestamptz '2026-07-15 12:00:00+00')::text"
+    ).fetchone()
+    assert offsets == (0, 0, "2026-07-15 12:00:00+00"), offsets
     cols = pg_conn.execute(
         "SELECT table_name, column_name, data_type FROM information_schema.columns WHERE table_schema='public'"
         " AND (column_name LIKE '%\\_at' OR column_name IN ('first_seen','last_seen','run_after'))"

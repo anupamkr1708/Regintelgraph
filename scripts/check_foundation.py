@@ -22,6 +22,9 @@ from pathlib import Path
 REQUIRED_FILES: tuple[str, ...] = (
     "AGENTS.md",
     "README.md",
+    "SECURITY.md",  # public-repository policy documents (Phase 1C closeout); deleting one must be a deliberate, reviewed act
+    "CONTRIBUTING.md",
+    "THIRD-PARTY-NOTICES.md",
     ".gitignore",
     ".env.example",
     "docs/README.md",
