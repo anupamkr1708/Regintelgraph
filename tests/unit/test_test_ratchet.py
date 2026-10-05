@@ -15,7 +15,14 @@ from scripts import check_test_ratchet as r
 REPO = Path(__file__).resolve().parents[2]
 
 
+PYPROJECT = (
+    '[tool.pytest.ini_options]\nminversion = "8.0"\ntestpaths = ["tests"]\npythonpath = ["."]\n'
+    'addopts = "-ra --strict-markers --strict-config --import-mode=importlib"\nmarkers = ["postgres: needs PostgreSQL"]\n'
+)
+
+
 def make_tree(root: Path, **per_category: str) -> None:
+    (root / "pyproject.toml").write_text(PYPROJECT, encoding="utf-8")  # the guard requires the reviewed pytest config (fail closed)
     for category, rel in r.CATEGORIES.items():
         d = root / rel
         d.mkdir(parents=True, exist_ok=True)
@@ -264,3 +271,301 @@ def test_the_script_runs_standalone_with_only_the_standard_library() -> None:
         [sys.executable, "-S", str(REPO / "scripts/check_test_ratchet.py")], capture_output=True, text=True, cwd=REPO, check=False
     )
     assert proc.returncode == 0 and "holds" in proc.stdout, proc.stderr
+
+
+# ---- pytest collection/configuration controls (P1 review finding on PR #1) -----------------------------------------------------
+
+
+def put(root: Path, rel: str, text: str) -> None:
+    path = root / rel
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(text, encoding="utf-8")
+
+
+def with_pyproject(root: Path, ini_body: str) -> None:
+    put(root, "pyproject.toml", f"[tool.pytest.ini_options]\n{ini_body}\n")
+
+
+def controls(root: Path) -> list[str]:
+    return r.pytest_control_violations(root)
+
+
+def protected_tree(tmp_path: Path) -> Path:
+    """A valid ratcheted tree: baseline recorded, counts hold, no controls."""
+    root = baseline_tree(tmp_path)
+    assert run(root) == 0
+    assert controls(root) == []
+    return root
+
+
+# Case 1 — the review finding: valid test files + a conftest collection hook; the static count does not move.
+
+
+@pytest.mark.parametrize("hook", sorted(r._CONTROL_HOOKS))
+def test_a_conftest_control_hook_is_rejected_while_the_static_count_is_unchanged(tmp_path: Path, hook: str) -> None:
+    root = protected_tree(tmp_path)
+    before = r.measure(root)
+    put(root, "tests/security/conftest.py", f"def {hook}(*args, **kwargs):\n    return None\n")
+    assert r.measure(root) == before  # the count-only ratchet would still pass: exactly the reported gap
+    assert any(f"control hook '{hook}'" in v for v in controls(root))
+    assert run(root) == 1
+
+
+def test_the_reported_bypass_shape_is_rejected_end_to_end(tmp_path: Path) -> None:
+    root = protected_tree(tmp_path)
+    put(
+        root,
+        "tests/conftest.py",
+        "def pytest_collection_modifyitems(config, items):\n    items[:] = [i for i in items if 'security' not in str(i.path)]\n",
+    )
+    violations, _ = r.check(root, root / r.BASELINE_RELPATH)
+    assert any("tests/conftest.py:1" in v and "pytest_collection_modifyitems" in v for v in violations)
+    assert run(root) == 1
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        "async def pytest_ignore_collect(collection_path): return True\n",
+        "from helpers import pytest_collection_modifyitems\n",
+        "from helpers import hook as pytest_ignore_collect\n",
+        "pytest_collection_modifyitems = lambda config, items: items.clear()\n",
+        "def f(config):\n    config.pluginmanager.set_blocked('x')\n",
+        "def f(config):\n    config.option.markexpr = 'nothing'\n",
+        "import pytest\n\n@pytest.fixture(autouse=True)\ndef _off():\n    pytest.skip('x')\n",
+    ],
+)
+def test_other_ways_to_install_a_control_in_a_conftest_are_rejected(tmp_path: Path, source: str) -> None:
+    root = protected_tree(tmp_path)
+    put(root, "tests/integration/conftest.py", source)
+    assert controls(root) and run(root) == 1
+
+
+def test_a_plugin_named_in_pytest_plugins_is_scanned_like_a_conftest(tmp_path: Path) -> None:
+    root = protected_tree(tmp_path)
+    put(root, "tests/conftest.py", 'pytest_plugins = ["tests.support.plug"]\n')
+    put(root, "tests/support/__init__.py", "")
+    put(root, "tests/support/plug.py", "def pytest_runtest_makereport(item, call):\n    pass\n")
+    assert any("tests/support/plug.py" in v and "pytest_runtest_makereport" in v for v in controls(root))
+
+
+def test_dunder_test_false_disables_a_module_or_class_without_changing_the_count(tmp_path: Path) -> None:
+    root = protected_tree(tmp_path)
+    before = r.measure(root)
+    put(root, "tests/security/test_x.py", "__test__ = False\n" + (root / "tests/security/test_x.py").read_text(encoding="utf-8"))
+    put(root, "tests/regression/test_x.py", "class TestG:\n    __test__ = False\n    def test_a(self): pass\n" + make_src(1))
+    assert r.measure(root)[0]["security"] == before[0]["security"]
+    found = controls(root)
+    assert any("tests/security/test_x.py:1" in v and "__test__" in v for v in found)
+    assert any("tests/regression/test_x.py:2" in v for v in found)
+
+
+# Case 2 — collection-ignore and selection configuration.
+
+
+@pytest.mark.parametrize("name", ["collect_ignore", "collect_ignore_glob"])
+def test_a_conftest_collection_ignore_is_rejected(tmp_path: Path, name: str) -> None:
+    root = protected_tree(tmp_path)
+    put(root, "tests/conftest.py", f'{name} = ["security"]\n')
+    assert any(f"'{name}'" in v for v in controls(root))
+    assert run(root) == 1
+
+
+@pytest.mark.parametrize(
+    "ini",
+    [
+        'norecursedirs = ["security"]',
+        'python_files = ["check_*.py"]',
+        'python_classes = ["Check"]',
+        'python_functions = ["check"]',
+        "collect_imported_tests = false",
+        "addopts = \"-ra -m 'not security'\"",
+        'addopts = "-ra -k nothing"',
+        'addopts = ["--deselect", "tests/security/test_x.py::test_0"]',
+        'addopts = "--ignore=tests/security"',
+        'addopts = "--ignore-glob=tests/*/test_x.py"',
+        'addopts = "-p no:cacheprovider"',
+        'addopts = "-c other.ini"',
+        'addopts = "-o testpaths=x"',
+        'addopts = "--collect-only"',
+        'addopts = "--setup-plan"',
+        'addopts = "--lf"',
+        'addopts = "--noconftest"',
+        'addopts = "-xk nothing"',
+        'addopts = "-qm nothing"',
+        'testpaths = ["tests/unit"]',
+        'testpaths = ["tests/*"]',
+    ],
+)
+def test_pyproject_selection_and_ignore_settings_are_rejected(tmp_path: Path, ini: str) -> None:
+    root = protected_tree(tmp_path)
+    with_pyproject(root, ini)
+    assert controls(root), ini
+    assert run(root) == 1
+
+
+def test_native_pytest_toml_table_in_pyproject_is_checked_too(tmp_path: Path) -> None:
+    root = protected_tree(tmp_path)
+    put(root, "pyproject.toml", '[tool.pytest]\nnorecursedirs = ["security"]\n')
+    assert any("'norecursedirs'" in v for v in controls(root))
+
+
+@pytest.mark.parametrize("name", ["pytest.ini", ".pytest.ini", "pytest.toml", ".pytest.toml"])
+@pytest.mark.parametrize("where", ["", "tests/", "tests/security/"])
+def test_a_higher_precedence_pytest_config_file_anywhere_is_rejected(tmp_path: Path, name: str, where: str) -> None:
+    root = protected_tree(tmp_path)
+    put(root, f"{where}{name}", "[pytest]\n")
+    assert any(f"{where}{name}" in v and "precedence" in v for v in controls(root))
+    assert run(root) == 1
+
+
+@pytest.mark.parametrize(("name", "content"), [("tox.ini", "[pytest]\naddopts = -ra\n"), ("setup.cfg", "[tool:pytest]\naddopts = -ra\n")])
+def test_shared_config_files_with_a_pytest_section_are_rejected(tmp_path: Path, name: str, content: str) -> None:
+    root = protected_tree(tmp_path)
+    put(root, name, content)
+    assert any(name in v for v in controls(root))
+
+
+def test_a_pytest_table_in_a_non_root_pyproject_is_rejected(tmp_path: Path) -> None:
+    root = protected_tree(tmp_path)
+    put(root, "tests/security/pyproject.toml", "[tool.pytest.ini_options]\naddopts = ''\n")
+    assert any("tests/security/pyproject.toml" in v for v in controls(root))
+
+
+def test_ci_environment_pytest_controls_are_rejected_but_comments_are_not(tmp_path: Path) -> None:
+    root = protected_tree(tmp_path)
+    put(root, ".github/workflows/ci.yml", "# PYTEST_ADDOPTS is documented here\njobs:\n  t:\n    env:\n      PYTEST_ADDOPTS: -m nothing\n")
+    found = controls(root)
+    assert len(found) == 1 and ".github/workflows/ci.yml:5" in found[0]
+
+
+# Case 3 — legitimate structure and configuration still pass.
+
+
+def test_legitimate_fixtures_helpers_markers_hooks_and_config_still_pass(tmp_path: Path) -> None:
+    root = protected_tree(tmp_path)
+    put(
+        root,
+        "tests/conftest.py",
+        "import pytest\n\npytest_plugins = ['tests.support.plug']\n\n"
+        "def pytest_configure(config):\n    config.addinivalue_line('markers', 'slow: slow')\n\n"
+        "def pytest_generate_tests(metafunc):\n    pass\n\n"
+        "@pytest.fixture(autouse=True)\ndef _env(monkeypatch):\n    monkeypatch.setenv('X', '1')\n\n"
+        "@pytest.fixture(params=['a', pytest.param('b', marks=pytest.mark.postgres)])\ndef kind(request):\n    return request.param\n",
+    )
+    put(root, "tests/support/__init__.py", "")
+    put(
+        root,
+        "tests/support/plug.py",
+        "import pytest\n\n@pytest.fixture\ndef db():\n    pytest.skip('reviewed, env-guarded runtime skip in a plugin fixture')\n",
+    )
+    put(root, "tests/security/test_x.py", "__test__ = True\n" + (root / "tests/security/test_x.py").read_text(encoding="utf-8"))
+    put(root, "tox.ini", "[flake8]\nmax-line-length = 100\n")
+    put(root, "setup.cfg", "[metadata]\nname = x\n")
+    put(root, ".github/workflows/ci.yml", "jobs:\n  t:\n    steps:\n      - run: pytest -m 'not postgres' -ra\n")
+    with_pyproject(
+        root,
+        'testpaths = ["tests"]\naddopts = "-ra -rfEsxXpP -q -x --strict-markers --strict-config --import-mode=importlib"\nmarkers = ["a: b"]',
+    )
+    assert controls(root) == []
+    assert run(root) == 0
+
+
+def test_testpaths_that_cover_the_protected_directories_pass(tmp_path: Path) -> None:
+    root = protected_tree(tmp_path)
+    with_pyproject(root, 'testpaths = ["tests/integration", "./tests/regression/", "tests/security"]')
+    assert controls(root) == []
+    with_pyproject(root, 'testpaths = ["."]')
+    assert controls(root) == []
+
+
+def test_the_real_repository_conftests_plugins_and_config_pass() -> None:
+    assert r.pytest_control_violations(REPO) == []
+
+
+# Case 4 — moving tests between files/directories cannot hide a control.
+
+
+def test_moving_tests_between_files_does_not_hide_a_control(tmp_path: Path) -> None:
+    root = protected_tree(tmp_path)
+    before_tests, _ = r.measure(root)
+    put(root, "tests/security/deep/er/test_moved.py", (root / "tests/security/test_x.py").read_text(encoding="utf-8"))
+    (root / "tests/security/test_x.py").unlink()
+    assert r.measure(root)[0] == before_tests  # count preserved by the move
+    put(root, "tests/security/deep/conftest.py", "def pytest_ignore_collect(collection_path):\n    return True\n")
+    assert any("tests/security/deep/conftest.py" in v for v in controls(root))
+    put(root, "conftest.py", "collect_ignore_glob = ['tests/*']\n")  # repository-root conftest
+    assert any(v.startswith("pytest-controls: conftest.py") for v in controls(root))
+
+
+def test_a_conftest_outside_the_protected_directories_is_still_scanned(tmp_path: Path) -> None:
+    root = protected_tree(tmp_path)
+    put(root, "tests/unit/conftest.py", "def pytest_collection_modifyitems(items):\n    items.clear()\n")
+    assert any("tests/unit/conftest.py" in v for v in controls(root))
+
+
+def test_pruned_vendor_directories_are_not_scanned(tmp_path: Path) -> None:
+    root = protected_tree(tmp_path)
+    put(root, ".venv/lib/site-packages/pkg/conftest.py", "def pytest_collection_modifyitems(items):\n    items.clear()\n")
+    put(root, ".venv/lib/site-packages/pkg/setup.cfg", "[tool:pytest]\n")
+    assert controls(root) == []
+
+
+# Case 5 — unreadable/malformed configuration fails closed (structure error, exit 2), never silently ignored.
+
+
+@pytest.mark.parametrize(
+    ("rel", "text"),
+    [
+        ("tests/conftest.py", "def broken(:\n"),
+        ("tests/integration/conftest.py", "x = (\n"),
+        ("pyproject.toml", "[tool.pytest.ini_options\n"),
+        ("pyproject.toml", "[tool.ruff]\nline-length = 1\n"),  # no pytest table at all
+        ("pyproject.toml", "[tool.pytest.ini_options]\naddopts = 5\n"),
+        ("pyproject.toml", '[tool.pytest.ini_options]\naddopts = "-ra \'unbalanced"\n'),
+        ("pyproject.toml", "[tool.pytest.ini_options]\ntestpaths = 5\n"),
+        ("tox.ini", "[pytest\n"),
+    ],
+)
+def test_unparsable_or_missing_pytest_configuration_is_a_structure_error(tmp_path: Path, rel: str, text: str) -> None:
+    root = protected_tree(tmp_path)
+    put(root, rel, text)
+    with pytest.raises(r.RatchetError):
+        controls(root)
+    assert run(root) == 2
+
+
+def test_a_missing_root_pyproject_is_a_structure_error(tmp_path: Path) -> None:
+    root = protected_tree(tmp_path)
+    (root / "pyproject.toml").unlink()
+    assert run(root) == 2
+
+
+@pytest.mark.parametrize("value", ["plugins_from_somewhere()", "[name for name in x]", "['ok', other]"])
+def test_a_non_literal_pytest_plugins_value_is_rejected(tmp_path: Path, value: str) -> None:
+    root = protected_tree(tmp_path)
+    put(root, "tests/conftest.py", f"pytest_plugins = {value}\n")
+    assert any("not a literal" in v for v in controls(root))
+
+
+@pytest.mark.parametrize("name", ["some_third_party_plugin", "tests.support.missing", "../escape"])
+def test_a_plugin_that_cannot_be_resolved_inside_the_repository_is_rejected(tmp_path: Path, name: str) -> None:
+    root = protected_tree(tmp_path)
+    put(root, "tests/conftest.py", f"pytest_plugins = [{name!r}]\n")
+    assert any("cannot be verified" in v for v in controls(root))
+
+
+def test_a_plugin_cycle_terminates(tmp_path: Path) -> None:
+    root = protected_tree(tmp_path)
+    put(root, "tests/conftest.py", "pytest_plugins = ['tests.a']\n")
+    put(root, "tests/a.py", "pytest_plugins = ['tests.b']\n")
+    put(root, "tests/b.py", "pytest_plugins = ['tests.a']\n")
+    assert controls(root) == []
+
+
+def test_the_baseline_file_is_untouched_by_the_controls_guard(tmp_path: Path) -> None:
+    root = protected_tree(tmp_path)
+    before = (root / r.BASELINE_RELPATH).read_bytes()
+    put(root, "tests/conftest.py", "collect_ignore = ['security']\n")
+    assert run(root) == 1
+    assert (root / r.BASELINE_RELPATH).read_bytes() == before
