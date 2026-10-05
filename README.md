@@ -2,7 +2,7 @@
 
 **Evidence-grounded regulatory intelligence and compliance-impact analysis.**
 
-> Status: **Phase 1C (contract-first implementation) is implemented locally and awaiting review.** The first code exists (`packages/domain`, `packages/ingestion`, SQL migrations, offline and PostgreSQL tests); the CI workflow is configured but has not yet been observed running on GitHub. **Live SEBI ingestion remains disabled** — the manifest gate is closed (`ingestion_authorized: false`) pending the human source-access review ([source-access-report](docs/phase1/source-access-report.md)); no live corpus has been ingested and sub-stage 1D has not started. No performance or quality numbers are claimed: every such number must come from a reproducible experiment (see [evaluation](docs/evaluation.md)).
+> Status: **Phase 1C (contract-first implementation) is implemented; its closeout is not complete until GitHub Actions is observed green.** The code exists (`packages/domain`, `packages/ingestion`, SQL migrations, offline and PostgreSQL tests). The first observed GitHub run of the Phase 1C commit *failed* in the PostgreSQL integration job (a timezone assertion that compared a provider-specific name); the closeout change set fixes it, adds the durable `fetch_request` audit, a test-count ratchet, a digest-pinned CI database image, and the crawl-safety parameter specification — none of which counts as closed until a green run is observed. **Live SEBI ingestion remains disabled** — the manifest gate is closed (`ingestion_authorized: false`) pending the human source-access review ([source-access-report](docs/phase1/source-access-report.md)); no live corpus has been ingested and sub-stage 1D has not started. No performance or quality numbers are claimed: every such number must come from a reproducible experiment (see [evaluation](docs/evaluation.md)).
 
 ## Overview
 
@@ -48,7 +48,8 @@ Trusted control plane vs untrusted regulatory content. Retrieved text is data, n
 ## Development
 
 - Engineering constitution (single canonical file, for humans and AI assistants): [AGENTS.md](AGENTS.md).
-- Foundation checks (stdlib only): `python scripts/check_foundation.py`; import boundaries: `python scripts/check_imports.py`; secret scan: `python scripts/check_secrets.py`
+- Foundation checks (stdlib only): `python scripts/check_foundation.py`; test-count ratchet: `python scripts/check_test_ratchet.py`; import boundaries: `python scripts/check_imports.py`; secret scan: `python scripts/check_secrets.py`
+- Contributing, security reporting and third-party notices: [CONTRIBUTING](CONTRIBUTING.md) · [SECURITY](SECURITY.md) · [THIRD-PARTY-NOTICES](THIRD-PARTY-NOTICES.md)
 - Setup (Python 3.12 via `uv`): `uv sync --frozen`. Lint/types: `uv run ruff check . && uv run ruff format --check . && uv run mypy`
 - Offline tests (no network, no database, no paid APIs): `uv run pytest -m "not postgres"`
 - Local PostgreSQL (project-local, socket-only; Docker not required — [plan](docs/phase1/local-postgres-plan.md)): `scripts/pg-dev.sh init && scripts/pg-dev.sh start`, then `python scripts/migrate.py apply --dsn "$(scripts/pg-dev.sh url)"` and `RIG_TEST_DATABASE_URL="$(scripts/pg-dev.sh test-url)" uv run pytest -m postgres`
@@ -58,6 +59,6 @@ Trusted control plane vs untrusted regulatory content. Retrieved text is data, n
 
 ## Roadmap
 
-Phases 0–18 in [implementation-roadmap](docs/implementation-roadmap.md). Phase 1 is delivered in sub-stages 1A–1D; 1A–1C are done. Next: review of Phase 1C, then the human source-access decision that unblocks 1D (controlled live sample). See [stage-1-review](docs/stage-1-review.md).
+Phases 0–18 in [implementation-roadmap](docs/implementation-roadmap.md). Phase 1 is delivered in sub-stages 1A–1D; 1A and 1B are done and 1C is implemented but not yet closed (CI must be observed green). 1D (controlled live sample) remains **blocked** until a human opens the source-access gate; see [source-access-review-1d](docs/phase1/source-access-review-1d.md) for the exact blockers. See [stage-1-review](docs/stage-1-review.md).
 
 Documentation index: [docs/README.md](docs/README.md).

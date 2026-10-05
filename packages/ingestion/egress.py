@@ -17,15 +17,15 @@ import re
 import tempfile
 import threading
 import zlib
-from collections.abc import Collection, Iterator, Mapping
+from collections.abc import Callable, Collection, Iterator, Mapping
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 from email.utils import parsedate_to_datetime
 from typing import BinaryIO
 from urllib.parse import urljoin, urlsplit
 
-from packages.domain.ingest import FetchFailure, FetchPurpose, QuarantineReason
+from packages.domain.ingest import FetchFailure, FetchOutcome, FetchPurpose, QuarantineReason
 from packages.domain.manifest import PathPrefixes, SafetyLimits
 from packages.ingestion.errors import (
     CircuitOpenError,
@@ -104,6 +104,38 @@ class FetchedResponse:
             self.body = None
 
 
+@dataclass(frozen=True, slots=True)
+class AttemptAudit:
+    """What the egress client observed about ONE request attempt; the pipeline turns it into a durable `fetch_request`.
+
+    Carries provenance of the request only: sanitised/validated URLs, the allowlisted response headers, the HTTP status,
+    the outcome class and the body hash. Never a body, never request headers (so never the contact identity).
+    """
+
+    attempt: int
+    requested_url: str
+    final_url: str | None
+    redirect_chain: tuple[str, ...]
+    status: int | None
+    outcome: FetchOutcome
+    headers: Mapping[str, str]
+    retrieved_at: datetime
+    elapsed_seconds: float
+    content_hash: str | None
+
+
+@dataclass(slots=True)
+class _Trace:
+    """Mutable record of one attempt, filled as it progresses so a failure still reports what was observed before it."""
+
+    requested_url: str = ""
+    final_url: str | None = None
+    chain: list[str] = field(default_factory=list)
+    status: int | None = None
+    headers: dict[str, str] = field(default_factory=dict)
+    elapsed: float = 0.0  # seconds holding a host request slot (connect, TLS, headers, body); excludes pacing waits
+
+
 class HostPacer:
     """One in-flight request per host and a minimum delay between request STARTS (contract §7)."""
 
@@ -160,19 +192,31 @@ class EgressClient:
 
     # ---- public --------------------------------------------------------------------------------------------------
 
-    def fetch(self, url: str, purpose: FetchPurpose, *, validators: Validators | None = None) -> FetchedResponse:
-        """Fetch `url` with bounded retries. Raises FetchError (with `.attempts`) or CircuitOpenError."""
+    def fetch(
+        self,
+        url: str,
+        purpose: FetchPurpose,
+        *,
+        validators: Validators | None = None,
+        on_attempt: Callable[[AttemptAudit], None] | None = None,
+    ) -> FetchedResponse:
+        """Fetch `url` with bounded retries. Raises FetchError (with `.attempts`) or CircuitOpenError.
+
+        `on_attempt`, when given, is called synchronously after EVERY attempt (success, failure, refusal, circuit trip) and
+        before any backoff sleep, so the audit trail is durable even if a later step fails. If it raises, the fetch is
+        abandoned (fail closed: no request may go un-audited).
+        """
         lim = self._limits
         deadline = self._clock.monotonic() + lim.candidate_deadline_seconds
         attempt = 0
         while True:
             attempt += 1
+            trace = _Trace()
             try:
-                response = self._attempt(url, purpose, validators, deadline)
-                response.attempts = attempt
-                return response
+                response = self._attempt(url, purpose, validators, deadline, trace)
             except FetchError as err:
                 err.attempts = attempt
+                self._audit(on_attempt, attempt, url, trace, FetchOutcome(err.kind.value))
                 if not err.kind.retryable or attempt >= lim.max_attempts:
                     raise
                 delay = max(
@@ -185,6 +229,42 @@ class EgressClient:
                     raise
                 LOGGER.info("retrying %s after %.2fs (attempt %d)", err.kind.value, delay, attempt)
                 self._clock.sleep(delay)
+            except CircuitOpenError:
+                self._audit(on_attempt, attempt, url, trace, FetchOutcome.CIRCUIT_OPEN)
+                raise
+            else:
+                response.attempts = attempt
+                outcome = FetchOutcome.NOT_MODIFIED if response.not_modified else FetchOutcome.OK
+                self._audit(on_attempt, attempt, url, trace, outcome, response=response)
+                return response
+
+    def _audit(
+        self,
+        on_attempt: Callable[[AttemptAudit], None] | None,
+        attempt: int,
+        url: str,
+        trace: _Trace,
+        outcome: FetchOutcome,
+        *,
+        response: FetchedResponse | None = None,
+    ) -> None:
+        if on_attempt is None:
+            return
+        on_attempt(
+            AttemptAudit(
+                attempt=attempt,
+                # hop-0 URL rejected before any hop was recorded: fall back to the log-safe form of the input
+                requested_url=trace.requested_url or safe_url(url, secrets=self._secrets),
+                final_url=trace.final_url,
+                redirect_chain=tuple(trace.chain),
+                status=trace.status,
+                outcome=outcome,
+                headers=dict(trace.headers),
+                retrieved_at=response.retrieved_at if response is not None else self._clock.now(),
+                elapsed_seconds=max(trace.elapsed, 0.0),
+                content_hash=(response.sha256_hex or None) if response is not None else None,
+            )
+        )
 
     def check_url(self, url: str, purpose: FetchPurpose) -> ValidatedUrl:
         """Static validation only (no DNS, no network). Raises FetchError(URL_REJECTED, quarantine=...)."""
@@ -212,9 +292,8 @@ class EgressClient:
             )
             raise FetchError(FetchFailure.REDIRECT_REJECTED, f"redirect target rejected: {exc.detail}", quarantine=reason) from exc
 
-    def _attempt(self, url: str, purpose: FetchPurpose, validators: Validators | None, deadline: float) -> FetchedResponse:
+    def _attempt(self, url: str, purpose: FetchPurpose, validators: Validators | None, deadline: float, trace: _Trace) -> FetchedResponse:
         lim = self._limits
-        chain: list[str] = []
         seen: set[str] = set()
         current = url
         first_url = ""
@@ -224,22 +303,28 @@ class EgressClient:
                 raise FetchError(FetchFailure.REDIRECT_REJECTED, "redirect loop", quarantine=QuarantineReason.REDIRECT_OFF_ALLOWLIST)
             seen.add(target.url)
             first_url = first_url or target.url
-            chain.append(safe_url(target.url, secrets=self._secrets))
+            trace.requested_url = first_url  # validated + normalised: no userinfo/fragment; query only for a reviewed listing
+            trace.final_url = target.url
+            trace.chain.append(safe_url(target.url, secrets=self._secrets))
             ips = validate_resolution(target.host, self._resolver)  # after URL validation, before any connect
             conditional = hop == 0 and validators is not None
             with self._pacer.slot(target.host):
-                resp = self._open(target, ips[0], purpose, validators if conditional else None)
+                slot_started = self._clock.monotonic()
                 try:
-                    LOGGER.info(
-                        "response %s %s headers=%s", resp.status, safe_url(target.url), safe_headers(resp.headers, secrets=self._secrets)
-                    )
-                    if resp.status in REDIRECT_STATUSES:
-                        self._note_success()
-                        current = self._next_location(resp, current)
-                        continue
-                    return self._finish(resp, target, first_url, tuple(chain), purpose, deadline)
+                    resp = self._open(target, ips[0], purpose, validators if conditional else None)
+                    try:
+                        trace.status = resp.status
+                        trace.headers = safe_headers(resp.headers, secrets=self._secrets)
+                        LOGGER.info("response %s %s headers=%s", resp.status, safe_url(target.url), trace.headers)
+                        if resp.status in REDIRECT_STATUSES:
+                            self._note_success()
+                            current = self._next_location(resp, current)
+                            continue
+                        return self._finish(resp, target, first_url, tuple(trace.chain), purpose, deadline)
+                    finally:
+                        resp.close()
                 finally:
-                    resp.close()
+                    trace.elapsed += self._clock.monotonic() - slot_started
         raise FetchError(FetchFailure.REDIRECT_REJECTED, "too many redirects")
 
     def _next_location(self, resp: TransportResponse, current: str) -> str:

@@ -1,0 +1,41 @@
+{
+  "schema": 1,
+  "counts": {
+    "integration": 114,
+    "regression": 8,
+    "security": 147
+  },
+  "max_skip_markers": {
+    "integration": 0,
+    "regression": 0,
+    "security": 0
+  },
+  "history": [
+    {
+      "counts": {
+        "integration": 112,
+        "regression": 8,
+        "security": 136
+      },
+      "max_skip_markers": {
+        "integration": 0,
+        "regression": 0,
+        "security": 0
+      },
+      "reason": "initial baseline derived from the repository's test structure at the time the ratchet was introduced"
+    },
+    {
+      "counts": {
+        "integration": 114,
+        "regression": 8,
+        "security": 147
+      },
+      "max_skip_markers": {
+        "integration": 0,
+        "regression": 0,
+        "security": 0
+      },
+      "reason": "raised to the measured counts after adding fetch_request audit, crawl-parameter, timeout-boundary, CI-pin and zero-audit-rows tests in the Phase 1C closeout"
+    }
+  ]
+}

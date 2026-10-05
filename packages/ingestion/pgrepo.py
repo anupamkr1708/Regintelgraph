@@ -17,10 +17,20 @@ import psycopg
 from psycopg.types.json import Jsonb
 
 from packages.domain.content_hash import ContentHash
-from packages.domain.ingest import AbortReason, IngestAlert, IngestOutcome, IngestResult, IngestRun, RunStatus
+from packages.domain.ingest import (
+    AbortReason,
+    FetchOutcome,
+    FetchPurpose,
+    FetchRequest,
+    IngestAlert,
+    IngestOutcome,
+    IngestResult,
+    IngestRun,
+    RunStatus,
+)
 from packages.domain.manifest import SourceManifest
 from packages.ingestion.egress import Validators
-from packages.ingestion.errors import RunAlreadyActive
+from packages.ingestion.errors import RepositoryConflict, RunAlreadyActive
 from packages.ingestion.repository import ArtifactIngest, QuarantineIngest
 
 _COUNT_TABLES = (
@@ -300,6 +310,63 @@ class PgRepository:
                 now,
             ),
         )
+
+    def record_fetch_request(self, req: FetchRequest) -> None:
+        """Append one audit row. Integrity violations (FK, unique attempt key, CHECKs incl. the header allowlist) surface as RepositoryConflict."""
+        try:
+            with self._conn.transaction():
+                self._conn.execute(
+                    "INSERT INTO fetch_request (fetch_request_id, ingest_run_id, candidate_key, attempt, purpose, requested_url, final_url,"
+                    " redirect_chain, status, outcome, selected_headers, retrieved_at, elapsed_seconds, policy_version, content_hash)"
+                    " VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
+                    (
+                        req.fetch_request_id,
+                        req.ingest_run_id,
+                        req.candidate_key,
+                        req.attempt,
+                        req.purpose.value,
+                        req.requested_url,
+                        req.final_url,
+                        Jsonb(list(req.redirect_chain)),
+                        req.status,
+                        req.outcome.value,
+                        Jsonb(dict(req.selected_headers)),
+                        req.retrieved_at,
+                        req.elapsed_seconds,
+                        req.policy_version,
+                        req.content_hash.value if req.content_hash else None,
+                    ),
+                )
+        except psycopg.errors.IntegrityError as exc:
+            raise RepositoryConflict(f"fetch_request rejected by the database: {type(exc).__name__}") from exc
+
+    def fetch_requests(self, run_id: uuid.UUID | None = None) -> list[FetchRequest]:
+        rows = self._conn.execute(
+            "SELECT fetch_request_id, ingest_run_id, candidate_key, attempt, purpose, requested_url, final_url, redirect_chain, status,"
+            " outcome, selected_headers, retrieved_at, elapsed_seconds, policy_version, content_hash FROM fetch_request"
+            " WHERE (%s::uuid IS NULL OR ingest_run_id = %s::uuid) ORDER BY retrieved_at, candidate_key, attempt, fetch_request_id",
+            (run_id, run_id),
+        ).fetchall()
+        return [
+            FetchRequest(
+                fetch_request_id=r[0],
+                ingest_run_id=r[1],
+                candidate_key=r[2],
+                attempt=r[3],
+                purpose=FetchPurpose(r[4]),
+                requested_url=r[5],
+                final_url=r[6],
+                redirect_chain=tuple(r[7]),
+                status=r[8],
+                outcome=FetchOutcome(r[9]),
+                selected_headers=dict(r[10]),
+                retrieved_at=r[11],
+                elapsed_seconds=r[12],
+                policy_version=r[13],
+                content_hash=ContentHash.parse(str(r[14])) if r[14] is not None else None,
+            )
+            for r in rows
+        ]
 
     # ---- introspection (tests / reports) -----------------------------------------------------------------------------
 

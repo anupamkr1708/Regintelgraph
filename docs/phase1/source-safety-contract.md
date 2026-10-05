@@ -54,13 +54,13 @@ Relative links found in HTML are resolved against the **page's validated final U
 
 ## 6. Response limits, content-type and magic-byte verification (T-05, T-14)
 
-**Timeouts** (manifest): connect, per-read, and total-per-request. Exceeding any ⇒ `TIMEOUT` (retryable).
+**Timeouts** (manifest): connect, per-read, and total. Exceeding any ⇒ `TIMEOUT` (retryable). **Measurement boundaries as implemented:** `connect_timeout_seconds` covers TCP connect and the TLS handshake; `read_timeout_seconds` bounds each single socket operation; `total_timeout_seconds` is measured from the **start of body streaming** (not from the start of the request) and is checked between reads; the per-fetch `candidate_deadline_seconds` budget additionally covers pacing waits, attempts and backoff. The precise table, the consequences and the recommendation for review are in [crawl-safety-parameters](crawl-safety-parameters.md) §3. This is the authoritative statement of the semantics; "total-per-request" in earlier drafts meant body streaming, not the whole request lifecycle.
 
 **Size:**
 - Maximum bytes per `purpose` from the manifest (`LISTING`, `DETAIL_PAGE`, `ATTACHMENT`).
 - If `Content-Length` exceeds the cap, abort before reading the body.
 - **Never trust the header:** count bytes while streaming and abort the moment the cap is exceeded (`SIZE_EXCEEDED`; discard, do not store).
-- If `Content-Encoding` is present, decompress with a hard cap on *decompressed* bytes (and an expansion-ratio guard) to defeat decompression bombs.
+- If `Content-Encoding` is present, decompress with a hard cap on *decompressed* bytes (and an expansion-ratio guard, `max_expansion_ratio`) to defeat decompression bombs.
 - Reject responses that disagree with a present `Content-Length` after full read (truncation) ⇒ `PDF_SANITY_FAILED`/`SIZE_EXCEEDED` as appropriate.
 
 **Content-type (header):**
@@ -70,7 +70,7 @@ Relative links found in HTML are resolved against the **page's validated final U
 
 **PDF magic bytes and sanity (attachments):**
 - The first bytes must be the `%PDF-` signature at offset 0 (stricter than the lenient 1024-byte rule; fail closed). Failure ⇒ `MAGIC_BYTES_MISMATCH`. (The header is checked independently of the declared content type: a PDF served as HTML, and HTML served as PDF, are both caught.)
-- A trailer marker (`%%EOF`) must appear near the end (truncated downloads ⇒ `PDF_SANITY_FAILED`).
+- A trailer marker (`%%EOF`) must appear near the end — within the last `pdf_eof_tail_bytes` bytes (truncated downloads ⇒ `PDF_SANITY_FAILED`).
 - Bounded byte-level probe, **no rendering, no JavaScript, no embedded-file extraction, no execution**: flag the presence of encryption and of the names for JavaScript, launch actions, open-actions and embedded files ⇒ quarantine `PDF_SANITY_FAILED` with the specific flag; a reviewer may release. A byte-level token scan can miss objects inside compressed object streams; it is a coarse gate, **not** a safety proof. The real defence is the sandboxed parse in Phase 3 (T-05, OD-14), which is out of scope here.
 - Page-count and structure checks are **not** done at ingestion (parsing is later).
 
@@ -78,6 +78,7 @@ Relative links found in HTML are resolved against the **page's validated final U
 
 ## 7. Rate limiting, politeness, retries
 
+- All numeric limits in this section are the 16 mandatory manifest parameters specified in [crawl-safety-parameters](crawl-safety-parameters.md); an unset parameter refuses a `LIVE` run and is never defaulted.
 - **One in-flight request per host** (concurrency 1) and a **minimum delay between request starts** from the manifest (`crawl.min_delay_seconds`). A token-bucket/clock interface is injected so tests run without sleeping.
 - Honour `Retry-After` for 429/503; a longer server-specified wait overrides the configured delay.
 - **Identification:** a descriptive User-Agent naming the project plus a contact reference taken from `RIG_CRAWLER_CONTACT_EMAIL` (unset ⇒ `LIVE` runs refuse to start). No browser-UA spoofing, no header tricks, no IP/UA rotation.
@@ -113,10 +114,12 @@ Relative links found in HTML are resolved against the **page's validated final U
 ## 11. Logging restrictions (T-16)
 
 - **Never log:** secrets, tokens, the contact email value, cookies, authorization headers, full request/response header sets, response bodies, document text excerpts, or userinfo.
-- Log an **allowlisted header subset** only (`content-type`, `content-length`, `etag`, `last-modified`, `retry-after`, `location` after validation).
+- Log an **allowlisted header subset** only (`content-type`, `content-length`, `content-encoding`, `etag`, `last-modified`, `retry-after`, `location` after validation). The same allowlist is enforced by a database CHECK on `fetch_request.selected_headers`.
 - URLs are logged after stripping userinfo and fragments; query strings are logged only for the reviewed listing parameters.
 - Anything derived from remote content that reaches a log line (URLs, header values, error text) is **neutralised**: control characters and newlines escaped (no log injection), length-bounded, and treated as data. Exception messages from libraries are sanitised before logging.
 - Structured logs carry `request_id`, `ingest_run_id`, `candidate_key`, `policy_ref`. Log files live under the git-ignored `/logs/` and are never committed (H12).
+
+**Three kinds of record, three rules.** *Canonical/provenance data* (immutable database rows: `raw_artifact`, `document_version_location`, `quarantine_record`, `fetch_request`) keeps real request facts — an exact validated URL is provenance — but never persists unvalidated input verbatim, secrets, bodies or contact identity ([ingestion-contract](ingestion-contract.md) §3.4, *`requested_url` policy*). *Operational logging* is stricter again: neutralised, length-bounded, redacted, query-stripped, ephemeral and git-ignored. *Security telemetry* (alerts, quarantine counts by reason, circuit-breaker events) carries reason codes and counts only, never content.
 
 ## 12. Policy versioning and provenance
 

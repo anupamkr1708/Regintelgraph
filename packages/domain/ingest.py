@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import math
 import uuid
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from enum import StrEnum, unique
@@ -59,6 +61,29 @@ class FetchFailure(StrEnum):
     def retryable(self) -> bool:
         """Only these three categories are ever retried (source-safety-contract §7). Everything else never is."""
         return self in (FetchFailure.HTTP_TRANSIENT, FetchFailure.TIMEOUT, FetchFailure.TLS_ERROR)
+
+
+@unique
+class FetchOutcome(StrEnum):
+    """Result class of ONE request attempt, as recorded in `fetch_request` (ingestion-contract §3.2).
+
+    Every `FetchFailure` except GATE_CLOSED is representable (a closed gate performs no request at all, so there is
+    never a row for it); OK/NOT_MODIFIED are the two non-failure results; CIRCUIT_OPEN is the attempt on which the
+    per-host circuit breaker tripped. Adding a `FetchFailure` without a matching value here is caught by a parity test.
+    """
+
+    OK = "OK"
+    NOT_MODIFIED = "NOT_MODIFIED"
+    URL_REJECTED = "URL_REJECTED"
+    DNS_REJECTED = "DNS_REJECTED"
+    REDIRECT_REJECTED = "REDIRECT_REJECTED"
+    TLS_ERROR = "TLS_ERROR"
+    TIMEOUT = "TIMEOUT"
+    SIZE_EXCEEDED = "SIZE_EXCEEDED"
+    HTTP_PERMANENT = "HTTP_PERMANENT"
+    HTTP_TRANSIENT = "HTTP_TRANSIENT"
+    RATE_LIMITED_LOCAL = "RATE_LIMITED_LOCAL"
+    CIRCUIT_OPEN = "CIRCUIT_OPEN"
 
 
 @unique
@@ -196,3 +221,50 @@ class IngestResult:
     previous_content_hash: ContentHash | None = None
     quarantine_id: uuid.UUID | None = None
     alerts: tuple[IngestAlert, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class FetchRequest:
+    """Durable audit record of ONE request attempt (RUNTIME, append-only; ingestion-contract §3.2).
+
+    It records *that* and *how* a request happened, never *what came back*: no body, no cookies, no authorization
+    material, no contact identity, no document text. `selected_headers` holds only allowlisted response headers (the
+    repository layer and a database CHECK enforce the allowlist); `content_hash` is the SHA-256 of the response body when
+    one was received and accepted, so a request can be tied to the stored artifact without storing any content here.
+    `elapsed_seconds` is time spent holding the host's request slot (connect, TLS, headers, body), excluding pacing waits.
+    """
+
+    fetch_request_id: uuid.UUID
+    ingest_run_id: uuid.UUID
+    candidate_key: str
+    attempt: int
+    purpose: FetchPurpose
+    requested_url: str
+    final_url: str | None
+    redirect_chain: tuple[str, ...]
+    status: int | None  # HTTP status of the last response received; None when no response was received
+    outcome: FetchOutcome
+    selected_headers: Mapping[str, str]
+    retrieved_at: datetime
+    elapsed_seconds: float
+    policy_version: str
+    content_hash: ContentHash | None = None
+
+    def __post_init__(self) -> None:
+        if not self.candidate_key or not self.requested_url or not self.policy_version:
+            raise ValueError("candidate_key, requested_url and policy_version must be non-empty")
+        if self.attempt < 1:
+            raise ValueError("attempt starts at 1")
+        if self.status is not None and not 100 <= self.status <= 599:
+            raise ValueError("status must be an HTTP status code or None")
+        if not math.isfinite(self.elapsed_seconds) or self.elapsed_seconds < 0:
+            raise ValueError("elapsed_seconds must be finite and non-negative")
+        if any(k != k.lower() for k in self.selected_headers):
+            raise ValueError("selected_headers keys must be lower-case")
+        require_utc(self.retrieved_at, "retrieved_at")
+        if self.outcome is FetchOutcome.OK and (self.status != 200 or self.content_hash is None):
+            raise ValueError("OK means a 200 response whose body was hashed")
+        if self.outcome is FetchOutcome.NOT_MODIFIED and self.status != 304:
+            raise ValueError("NOT_MODIFIED means a 304 response")
+        if self.outcome is FetchOutcome.URL_REJECTED and self.status is not None:
+            raise ValueError("URL_REJECTED means no response was received")

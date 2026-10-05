@@ -20,6 +20,7 @@ from typing import Any, Protocol
 from packages.domain.content_hash import ContentHash
 from packages.domain.ingest import (
     AbortReason,
+    FetchRequest,
     IngestAlert,
     IngestOutcome,
     IngestResult,
@@ -29,7 +30,8 @@ from packages.domain.ingest import (
 )
 from packages.domain.manifest import ManifestCandidate, SourceManifest
 from packages.ingestion.egress import Validators
-from packages.ingestion.errors import RunAlreadyActive
+from packages.ingestion.errors import RepositoryConflict, RunAlreadyActive
+from packages.ingestion.logsafe import LOGGED_HEADERS
 
 IdFactory = Callable[[], uuid.UUID]
 
@@ -90,6 +92,8 @@ class Repository(Protocol):
     def quarantine(self, req: QuarantineIngest) -> IngestResult: ...
     def record_result(self, result: IngestResult, now: datetime) -> None: ...
     def counts(self) -> dict[str, int]: ...
+    def record_fetch_request(self, req: FetchRequest) -> None: ...
+    def fetch_requests(self, run_id: uuid.UUID | None = None) -> list[FetchRequest]: ...
     def version_hashes(self, candidate_key: str) -> list[str]: ...
     def last_seen(self, candidate_key: str, url: str) -> datetime | None: ...
 
@@ -126,6 +130,7 @@ class InMemoryRepository:
         self.versions: dict[uuid.UUID, _Ver] = {}
         self.quarantines: dict[tuple[uuid.UUID, str, str, str | None], uuid.UUID] = {}
         self.results: dict[tuple[uuid.UUID, str], IngestResult] = {}
+        self._fetch_requests: dict[tuple[uuid.UUID, str, str, int], FetchRequest] = {}
 
     def ensure_source(self, manifest: SourceManifest, manifest_ref: str, now: datetime) -> None:
         self.sources.setdefault(manifest.source_id, manifest.authority)
@@ -233,6 +238,21 @@ class InMemoryRepository:
 
     def record_result(self, result: IngestResult, now: datetime) -> None:
         self.results[(result.ingest_run_id, result.candidate_key)] = result
+
+    def record_fetch_request(self, req: FetchRequest) -> None:
+        """Mirrors the database constraints (FK to the run, unique attempt key, header allowlist) so offline tests catch violations."""
+        if req.ingest_run_id not in self.runs:
+            raise RepositoryConflict("fetch_request refers to an unknown ingest_run")
+        if not set(req.selected_headers) <= LOGGED_HEADERS:
+            raise RepositoryConflict("fetch_request.selected_headers contains a header outside the allowlist")
+        key = (req.ingest_run_id, req.candidate_key, req.purpose.value, req.attempt)
+        if key in self._fetch_requests:
+            raise RepositoryConflict("duplicate fetch_request attempt")
+        self._fetch_requests[key] = req
+
+    def fetch_requests(self, run_id: uuid.UUID | None = None) -> list[FetchRequest]:
+        rows = [r for r in self._fetch_requests.values() if run_id is None or r.ingest_run_id == run_id]
+        return sorted(rows, key=lambda r: (r.retrieved_at, r.candidate_key, r.attempt, str(r.fetch_request_id)))
 
     def counts(self) -> dict[str, int]:
         return {

@@ -269,7 +269,7 @@ def test_the_run_records_manifest_code_and_policy_provenance(env: Env) -> None:
         "1" * 64,
         "testreg-1",
         "test-sha",
-        "source-safety-contract@phase-1b",
+        "source-safety-contract@phase-1c",
     )
     assert (
         run.mode is RunMode.LIVE
