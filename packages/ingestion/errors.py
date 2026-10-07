@@ -21,6 +21,23 @@ class PolicyViolation(IngestError):
         self.missing = missing
 
 
+class SelectionError(IngestError):
+    """The caller's explicit candidate selection is missing or invalid. `code` is a stable, machine-checkable reason."""
+
+    def __init__(self, code: str, detail: str) -> None:
+        super().__init__(f"{code}: {detail}")
+        self.code = code
+        self.detail = detail
+
+
+class HtmlDecodeError(IngestError):
+    """A detail page could not be decoded strictly (unknown charset or invalid bytes). Nothing is replaced or guessed."""
+
+
+class WiringError(IngestError):
+    """Runtime wiring of real dependencies failed (missing/invalid configuration). Messages never contain secret values."""
+
+
 class ModeViolation(IngestError):
     """A DRY_RUN was handed a component that performs real network I/O. A dry run never turns into a live run."""
 

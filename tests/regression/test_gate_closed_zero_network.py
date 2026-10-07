@@ -34,6 +34,7 @@ def build(tmp_path: Path, resolver: object, transport: object, **cfg: object) ->
         code_version="test",
         authorisation_ref=str(cfg.get("authorisation_ref", "irrelevant-while-gate-is-closed")),
         env={"RIG_CRAWLER_CONTACT_EMAIL": "x@example.org"},
+        selected_candidate_keys=tuple(c.document_key for c in loaded.manifest.candidates),  # explicit scope, as every run now needs
     )
     deps = Dependencies(FakeClock(), SeededRng(), resolver, transport, FsBlobStore(tmp_path / "b"), FsBlobStore(tmp_path / "q"), repo)  # type: ignore[arg-type]
     return config, deps, repo
