@@ -46,6 +46,8 @@ class Env:
             code_version="test-sha",
             authorisation_ref="TEST-AUTH-SYNTHETIC" if mode is RunMode.LIVE else None,
             env={CONTACT_ENV: CONTACT_VALUE},
+            # explicit scope (there is no implicit "all"): by default exactly the manifest's candidates, in manifest order
+            selected_candidate_keys=tuple(c.document_key for c in m.candidates),
         )
         base.update(kw)
         return IngestConfig(**base)

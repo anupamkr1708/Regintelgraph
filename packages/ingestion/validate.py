@@ -16,6 +16,7 @@ from typing import BinaryIO
 
 from packages.domain.ingest import FetchPurpose, QuarantineReason
 from packages.domain.manifest import SafetyLimits
+from packages.ingestion.errors import HtmlDecodeError
 
 PDF_MAGIC = b"%PDF-"
 _ACTIVE_TOKENS = re.compile(rb"/(?:Encrypt|JavaScript|JS|Launch|OpenAction|EmbeddedFile)(?![A-Za-z0-9#])")
@@ -23,6 +24,7 @@ _SCAN_CHUNK = 1024 * 1024
 _SCAN_OVERLAP = 32  # longer than the longest token (`/EmbeddedFile`, 13 bytes) plus lookahead
 _PDF_TYPES = frozenset({"application/pdf"})
 _HTML_TYPES = frozenset({"text/html", "application/xhtml+xml"})
+_CHARSET = re.compile(r"charset\s*=\s*[\"']?([A-Za-z0-9._:-]{1,40})", re.IGNORECASE)
 
 
 @dataclass(frozen=True, slots=True)
@@ -34,6 +36,21 @@ class Rejection:
 def media_type(content_type: str | None) -> str:
     """`Content-Type` without parameters, lower-cased ('' if absent)."""
     return (content_type or "").split(";", 1)[0].strip().lower()
+
+
+def decode_html(body: bytes, content_type: str | None) -> str:
+    """Strictly decode an already size-capped HTML body using the response's declared charset (UTF-8 when none is declared).
+
+    The egress layer exposes raw bytes, so this small step lives with the other response checks and keeps the discovery parser a
+    pure text function. It never replaces invalid bytes (no U+FFFD): an unknown charset, a non-text codec or undecodable bytes
+    raise `HtmlDecodeError`. A charset declared only inside the HTML (`<meta>`) is not honoured: it would need a second parse.
+    """
+    declared = _CHARSET.search(content_type or "")
+    charset = declared.group(1) if declared else "utf-8"
+    try:
+        return body.decode(charset, errors="strict")
+    except (LookupError, UnicodeDecodeError) as exc:
+        raise HtmlDecodeError(f"detail page is not decodable as {charset!r}") from exc
 
 
 def sniff_media_type(head: bytes) -> str:

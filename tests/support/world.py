@@ -27,14 +27,18 @@ class World:
 
     def run(self, keys: Sequence[str]) -> IngestReport:
         cands = [candidate(k, index=i) for i, k in enumerate(keys)]
+        built = manifest(cands)
         cfg = IngestConfig(
-            manifest(cands),
+            built,
             ContentHash("2" * 64),
             "tests/synthetic",
             RunMode.LIVE,
             "test-sha",
             authorisation_ref="TEST",
             env={CONTACT_ENV: CONTACT_VALUE},
+            selected_candidate_keys=tuple(
+                c.document_key for c in built.candidates
+            ),  # explicit scope: the manifest's candidates, manifest order
         )
         return run_ingest(cfg, self.deps)
 
